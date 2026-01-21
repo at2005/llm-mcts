@@ -1,0 +1,9 @@
+[package]
+name = "mcts-rust"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1.0.100"
+tch = "0.22.0"
+tonic = "0.14.2"
