@@ -8,7 +8,7 @@ use inference::InferenceRequest;
 use inference::inference_client::InferenceClient;
 
 pub async fn get_client() -> Result<InferenceClient<Channel>> {
-    let host = std::env::var("INFERENCE_HOST").unwrap_or_else(|_| "[::1]:50051".to_string());
+    let host = std::env::var("INFERENCE_HOST").unwrap_or_else(|_| "http://[::1]:50051".to_string());
     let client = InferenceClient::connect(host).await?;
     Ok(client)
 }

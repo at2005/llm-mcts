@@ -1,6 +1,4 @@
-def main():
-    print("Hello from mcts!")
-
+from inference import serve
 
 if __name__ == "__main__":
-    main()
+    serve()
