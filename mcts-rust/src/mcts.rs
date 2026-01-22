@@ -1,15 +1,19 @@
+use crate::inference::inference_client::InferenceClient;
 use anyhow::Result;
 use std::cell::UnsafeCell;
+use std::collections::BTreeMap;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 use tch::{Device, Kind, Tensor};
+use tonic::transport::Channel;
 
 type NodeId = usize;
-use crate::gpu_runner::{policy_fn, value_fn};
+use crate::grpc::{get_client, policy_value_head};
 const C_PUCT: f32 = 1.0;
 const VIRTUAL_LOSS: u32 = 1;
 const NUM_NODES_TO_EXPAND: usize = 100;
 const MAX_ITERATIONS: usize = 1000;
+const EOS_ACTION: u32 = 1;
 
 pub fn to_vec_f32(t: &Tensor) -> Vec<f32> {
     let t = t.to_device(Device::Cpu).to_kind(Kind::Float).contiguous();
@@ -59,18 +63,18 @@ pub struct Node {
     value: AtomicF32,
     parent: Option<NodeId>,
     action: Option<u32>,
-    state: Tensor,
+    state: Vec<u64>,
     prior: f32,
     children: Vec<NodeId>,
 }
 
 impl Node {
-    pub fn new(parent: Option<NodeId>, action: u32, state: Tensor, prior: f32) -> Self {
+    pub fn new(parent: Option<NodeId>, action: Option<u32>, state: Vec<u64>, prior: f32) -> Self {
         Self {
             visits: AtomicU32::new(0),
             value: AtomicF32::new(0.0),
             parent: parent,
-            action: Some(action),
+            action: action,
             state: state,
             prior: prior,
             children: vec![],
@@ -82,15 +86,18 @@ pub struct Tree {
     nodes: UnsafeCell<Vec<Node>>,
     size: AtomicUsize,
     mutex: Mutex<()>,
+    inference_client: InferenceClient<Channel>,
 }
 
 impl Tree {
-    pub fn new() -> Self {
-        Self {
+    pub async fn new() -> Result<Self> {
+        let inference_client = get_client().await?;
+        Ok(Self {
             nodes: UnsafeCell::new(vec![]),
             size: AtomicUsize::new(0),
             mutex: Mutex::new(()),
-        }
+            inference_client: inference_client,
+        })
     }
 
     pub fn add_node(&mut self, node: Node) -> NodeId {
@@ -163,41 +170,44 @@ impl Tree {
         Ok(node.children.is_empty())
     }
 
-    pub fn expand(&mut self, node: NodeId) {
+    pub fn _build_new_state(&self, node: NodeId, action: u64) -> Vec<u64> {
         let current_node = self.get_node(node);
-        let current_state = current_node.state.shallow_clone();
+        let mut new_state = current_node.state.clone();
+        new_state.push(action);
+        new_state
+    }
 
-        let logits = policy_fn(&current_state);
-        let prior = logits.softmax(0, Kind::Float);
-        let (_values, indices) = prior.topk(NUM_NODES_TO_EXPAND as i64, 0, false, true);
-        let indices = indices.to_device(tch::Device::Cpu);
-        let indices = to_vec_i64(&indices);
+    pub async fn expand(&mut self, node: NodeId) -> Result<(BTreeMap<u32, f32>, f32)> {
+        let current_node = self.get_node(node);
+        let current_state = current_node.state.clone();
 
-        let prior = to_vec_f32(&prior);
+        let (prior, value) = policy_value_head(
+            &mut self.inference_client,
+            &current_state,
+            NUM_NODES_TO_EXPAND,
+        )
+        .await?;
+
         let _guard = self.mutex.lock().unwrap();
         let nodes = unsafe { &mut *self.nodes.get() };
 
-        for &action in indices.iter() {
-            let new_node = Node {
-                visits: AtomicU32::new(0),
-                value: AtomicF32::new(0.0),
-                parent: Some(node),
-                action: Some(action as u32),
-                prior: prior[action as usize],
-                state: current_state.shallow_clone(),
-                children: vec![],
-            };
+        let indices = prior.keys().collect::<Vec<_>>();
 
+        for &action in indices.iter() {
+            let new_state = self._build_new_state(node, *action as u64);
+            let new_node = Node::new(Some(node), Some(*action as u32), new_state, prior[action]);
             let id: usize = self.size.fetch_add(1, Ordering::Relaxed);
             nodes[node].children.push(id);
             nodes.push(new_node);
         }
+
+        Ok((prior, value))
     }
 }
 
-pub fn mcts(state: Tensor) -> Result<NodeId> {
-    let mut tree = Tree::new();
-    let root_node = Node::new(None, 0, state, 1.0);
+pub async fn mcts(state: Vec<u64>) -> Result<NodeId> {
+    let mut tree = Tree::new().await?;
+    let root_node = Node::new(None, None, state.clone(), 1.0);
     let root_id = tree.add_node(root_node);
 
     let mut iterations = 0;
@@ -206,10 +216,12 @@ pub fn mcts(state: Tensor) -> Result<NodeId> {
         let mut node = root_id;
         while !tree.is_leaf(node)? {
             node = tree.select(tree.get_node(node));
+            if tree.get_node(node).action == Some(EOS_ACTION) {
+                break;
+            }
             continue;
         }
-        tree.expand(node);
-        let value = value_fn(&tree.get_node(node).state);
+        let (_prior, value) = tree.expand(node).await?;
         tree.backprop(node, value);
         iterations += 1;
     }

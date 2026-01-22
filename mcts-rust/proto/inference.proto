@@ -1,0 +1,16 @@
+syntax = "proto3";
+package inference;
+
+service Inference {
+    rpc infer(InferenceRequest) returns (InferenceResponse);
+}
+
+message InferenceRequest {
+    repeated uint64 state = 1;
+    uint32 topk = 2;
+}
+
+message InferenceResponse {
+    map<uint32, float> prior = 1;
+    float value = 2;
+}
