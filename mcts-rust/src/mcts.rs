@@ -4,7 +4,6 @@ use std::cell::UnsafeCell;
 use std::collections::BTreeMap;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
-use tch::{Device, Kind, Tensor};
 use tonic::transport::Channel;
 
 type NodeId = usize;
@@ -14,22 +13,6 @@ const VIRTUAL_LOSS: u32 = 1;
 const NUM_NODES_TO_EXPAND: usize = 100;
 const MAX_ITERATIONS: usize = 1000;
 const EOS_ACTION: u32 = 1;
-
-pub fn to_vec_f32(t: &Tensor) -> Vec<f32> {
-    let t = t.to_device(Device::Cpu).to_kind(Kind::Float).contiguous();
-    let n = t.numel();
-    let mut v = vec![0f32; n];
-    t.copy_data(&mut v, n);
-    v
-}
-
-pub fn to_vec_i64(t: &Tensor) -> Vec<i64> {
-    let t = t.to_device(Device::Cpu).to_kind(Kind::Int64).contiguous();
-    let n = t.numel();
-    let mut v = vec![0i64; n];
-    t.copy_data(&mut v, n);
-    v
-}
 
 pub struct AtomicF32 {
     bits: AtomicU32,
