@@ -14,6 +14,7 @@ const VIRTUAL_LOSS: u32 = 1;
 const NUM_NODES_TO_EXPAND: usize = 100;
 const MAX_ITERATIONS: usize = 1000;
 const EOS_ACTION: u32 = 100;
+const MAX_NODES: usize = 1000000;
 
 #[derive(Debug)]
 pub struct AtomicF32 {
@@ -79,11 +80,14 @@ pub struct Tree {
     pub inference_client: InferenceClient<Channel>,
 }
 
+unsafe impl Sync for Tree {}
+
 impl Tree {
     pub async fn new() -> Result<Self> {
         let inference_client = get_client().await?;
+        let nodes = Vec::with_capacity(MAX_NODES);
         Ok(Self {
-            nodes: UnsafeCell::new(vec![]),
+            nodes: UnsafeCell::new(nodes),
             size: AtomicUsize::new(0),
             mutex: Mutex::new(()),
             inference_client: inference_client,
@@ -212,7 +216,7 @@ impl Tree {
     }
 }
 
-pub async fn mcts(tree: &mut Tree) -> Result<NodeId> {
+pub async fn mcts(tree: &mut Tree) -> Result<()> {
     // populate priors and value for root node
     tree.store_policy_value(ROOT_NODE_ID).await?;
 
@@ -258,18 +262,5 @@ pub async fn mcts(tree: &mut Tree) -> Result<NodeId> {
 
         iterations += 1;
     }
-
-    let root = tree.get_root();
-    let most_visited = root
-        .children
-        .iter()
-        .max_by(|(_, a_id), (_, b_id)| {
-            let a_visits = tree.get_node(**a_id).visits.load(Ordering::Relaxed);
-            let b_visits = tree.get_node(**b_id).visits.load(Ordering::Relaxed);
-            a_visits.partial_cmp(&b_visits).unwrap()
-        })
-        .expect("No children")
-        .clone();
-
-    Ok(*most_visited.1 as NodeId)
+    Ok(())
 }
