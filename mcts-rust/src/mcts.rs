@@ -1,7 +1,7 @@
 use crate::inference::inference_client::InferenceClient;
 use anyhow::Result;
 use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, OnceLock};
 use tonic::transport::Channel;
 
 type NodeId = usize;
@@ -123,7 +123,6 @@ impl Node {
 
 pub struct Tree {
     pub nodes: Box<[OnceLock<Node>]>,
-    pub mutex: Mutex<()>,
     pub inference_client: InferenceClient<Channel>,
     pub size: AtomicUsize,
 }
@@ -136,7 +135,6 @@ impl Tree {
 
         Ok(Self {
             nodes: nodes.into(),
-            mutex: Mutex::new(()),
             inference_client: inference_client,
             size: AtomicUsize::new(0),
         })
@@ -175,6 +173,24 @@ impl Tree {
                 let a_child_id = a.child_id.load(Ordering::Relaxed);
                 let b_child_id = b.child_id.load(Ordering::Relaxed);
 
+                let a_value = match a_child_id {
+                    NO_CHILD => 0.0,
+                    EXPANDING_NODE => 0.0,
+                    _ => self
+                        .get_node(a_child_id)
+                        .accumulated_value
+                        .load(Ordering::Relaxed),
+                };
+
+                let b_value = match b_child_id {
+                    NO_CHILD => 0.0,
+                    EXPANDING_NODE => 0.0,
+                    _ => self
+                        .get_node(b_child_id)
+                        .accumulated_value
+                        .load(Ordering::Relaxed),
+                };
+
                 let a_child_visits = match a_child_id {
                     NO_CHILD => 0,
                     EXPANDING_NODE => 0,
@@ -187,8 +203,8 @@ impl Tree {
                     _ => self.get_node(b_child_id).visits.load(Ordering::Relaxed),
                 };
 
-                let a_puct = puct(node_visits, 0.0, a_child_visits, a.prior);
-                let b_puct = puct(node_visits, 0.0, b_child_visits, b.prior);
+                let a_puct = puct(node_visits, a_value, a_child_visits, a.prior);
+                let b_puct = puct(node_visits, b_value, b_child_visits, b.prior);
                 a_puct.partial_cmp(&b_puct).expect("NaN")
             })
             .expect("Failed to find best action")
@@ -197,21 +213,24 @@ impl Tree {
     }
 
     pub fn backprop(&self, node: NodeId, reward: f32) -> Result<()> {
-        let parent = self.get_node(node).parent.expect("Parent is None");
+        let node_obj = self.get_node(node);
 
-        let parent_node = self.get_node(parent);
-        parent_node
+        node_obj
             .accumulated_value
             .fetch_add(reward, Ordering::Relaxed);
 
-        parent_node
+        node_obj
             .visits
             .fetch_add(1 - VIRTUAL_LOSS, Ordering::Relaxed);
 
-        if parent_node.parent.is_none() {
+        if node_obj.parent.is_none() {
             return Ok(());
         }
-        self.backprop(parent, reward)?;
+
+        if let Some(parent) = node_obj.parent {
+            self.backprop(parent, reward)?;
+        }
+
         Ok(())
     }
 
@@ -276,7 +295,7 @@ impl Tree {
     }
 }
 
-pub async fn mcts(tree: &mut Tree) -> Result<()> {
+pub async fn mcts(tree: &Tree) -> Result<()> {
     let mut iterations = 0;
 
     while iterations < MAX_ITERATIONS {
