@@ -1,9 +1,7 @@
 use crate::inference::inference_client::InferenceClient;
 use anyhow::Result;
-use std::cell::UnsafeCell;
-use std::collections::BTreeMap;
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
 use tonic::transport::Channel;
 
 type NodeId = usize;
@@ -15,6 +13,8 @@ const NUM_NODES_TO_EXPAND: usize = 100;
 const MAX_ITERATIONS: usize = 1000;
 const EOS_ACTION: u32 = 100;
 const MAX_NODES: usize = 1000000;
+pub const NO_CHILD: usize = usize::MAX;
+pub const EXPANDING_NODE: usize = usize::MAX - 1;
 
 #[derive(Debug)]
 pub struct AtomicF32 {
@@ -37,91 +37,119 @@ impl AtomicF32 {
     }
 
     pub fn fetch_add(&self, value: f32, ordering: Ordering) -> f32 {
-        let current = self.load(ordering);
-        let new = current + value;
-        self.store(new, ordering);
-        new
+        loop {
+            let current = self.load(ordering);
+            let new = current + value;
+            match self
+                .bits
+                .compare_exchange(current.to_bits(), new.to_bits(), ordering, ordering)
+            {
+                Ok(_) => return new,
+                Err(_) => continue,
+            }
+        }
     }
+}
+
+#[derive(Debug)]
+pub struct Edge {
+    pub child_id: AtomicUsize,
+    pub prior: f32,
+    pub action: u32,
+}
+
+impl Edge {
+    pub fn new(prior: f32, action: u32) -> Self {
+        Self {
+            child_id: AtomicUsize::new(NO_CHILD),
+            prior,
+            action,
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct Expansion {
+    pub edges: Arc<[Edge]>,
+    value: f32,
 }
 
 #[derive(Debug)]
 pub struct Node {
     pub visits: AtomicU32,
-    pub value: AtomicF32,
     pub parent: Option<NodeId>,
     pub action: Option<u32>,
-    pub state: Vec<u64>,
-    pub prior: f32,
-    // action -> node id
-    pub children: BTreeMap<u32, NodeId>,
-    // action -> prior
-    pub child_priors: BTreeMap<u32, f32>,
+    pub accumulated_value: Arc<AtomicF32>,
+    pub state: Arc<[u64]>,
+    pub expansion: tokio::sync::OnceCell<Expansion>,
 }
 
 impl Node {
-    pub fn new(parent: Option<NodeId>, action: Option<u32>, state: Vec<u64>, prior: f32) -> Self {
+    pub fn new(parent: Option<NodeId>, action: Option<u32>, state: Arc<[u64]>) -> Self {
         Self {
             visits: AtomicU32::new(0),
-            value: AtomicF32::new(0.0),
-            parent: parent,
-            action: action,
-            state: state,
-            prior: prior,
-            children: BTreeMap::new(),
-            child_priors: BTreeMap::new(),
+            parent,
+            action,
+            state,
+            expansion: tokio::sync::OnceCell::new(),
+            accumulated_value: Arc::new(AtomicF32::new(0.0)),
         }
+    }
+
+    pub async fn ensure_expansion(&self, tree: &Tree) -> Result<&Expansion> {
+        self.expansion
+            .get_or_try_init(|| async move {
+                let (priors, value) = policy_value_head(
+                    &mut tree.inference_client.clone(),
+                    &self.state,
+                    NUM_NODES_TO_EXPAND,
+                )
+                .await?;
+                let edges: Vec<Edge> = priors
+                    .iter()
+                    .map(|(action, prior)| Edge::new(*prior, *action))
+                    .collect();
+
+                self.accumulated_value.store(value, Ordering::Relaxed);
+
+                Ok(Expansion {
+                    edges: Arc::from(edges),
+                    value,
+                })
+            })
+            .await
     }
 }
 
 pub struct Tree {
-    pub nodes: UnsafeCell<Vec<Node>>,
-    pub size: AtomicUsize,
+    pub nodes: Box<[OnceLock<Node>]>,
     pub mutex: Mutex<()>,
     pub inference_client: InferenceClient<Channel>,
+    pub size: AtomicUsize,
 }
-
-unsafe impl Sync for Tree {}
 
 impl Tree {
     pub async fn new() -> Result<Self> {
         let inference_client = get_client().await?;
-        let nodes = Vec::with_capacity(MAX_NODES);
+        let mut nodes = Vec::with_capacity(MAX_NODES);
+        nodes.resize_with(MAX_NODES, OnceLock::new);
+
         Ok(Self {
-            nodes: UnsafeCell::new(nodes),
-            size: AtomicUsize::new(0),
+            nodes: nodes.into(),
             mutex: Mutex::new(()),
             inference_client: inference_client,
+            size: AtomicUsize::new(0),
         })
     }
 
-    pub fn add_node(&mut self, node: Node) -> NodeId {
-        let _guard: std::sync::MutexGuard<'_, ()> = self.mutex.lock().unwrap();
-        let id: usize = self.size.fetch_add(1, Ordering::Relaxed);
-        let nodes = unsafe { &mut *self.nodes.get() };
-
-        if let Some(parent) = node.parent {
-            nodes[parent]
-                .children
-                .insert(node.action.expect("Action is None"), id);
-        }
-        nodes.push(node);
+    pub fn node_alloc(&self, node: Node) -> NodeId {
+        let id = self.size.fetch_add(1, Ordering::Relaxed);
+        self.nodes[id].set(node).expect("slot already taken");
         id
     }
 
     pub fn get_node(&self, id: NodeId) -> &Node {
-        let nodes = unsafe { &*self.nodes.get() };
-        &nodes[id]
-    }
-
-    pub fn get_node_mut(&mut self, id: NodeId) -> &mut Node {
-        let nodes = unsafe { &mut *self.nodes.get() };
-        let node = &mut nodes[id];
-        node
-    }
-
-    pub fn get_root(&self) -> &Node {
-        let nodes = unsafe { &*self.nodes.get() };
-        &nodes[0]
+        self.nodes[id].get().expect("node uninitialized")
     }
 }
 
@@ -137,128 +165,151 @@ pub fn puct(visits: u32, value: f32, child_visits: u32, prior: f32) -> f32 {
 }
 
 impl Tree {
-    pub fn select(&self, node: &Node, priors: &BTreeMap<u32, f32>) -> u32 {
-        let children = node
-            .children
+    pub async fn select(&self, node: &Node, expansion: &Expansion) -> Result<usize> {
+        let node_visits = node.visits.load(Ordering::Relaxed);
+        let edge_idx = expansion
+            .edges
             .iter()
-            .map(|(action, id)| (*action, self.get_node(*id)))
-            .collect::<BTreeMap<_, _>>();
-        let puct_terms = priors
-            .iter()
-            .map(|(action, prior)| {
-                let parent_visits = node.visits.load(Ordering::Relaxed);
-                let puct_term = match children.get(action) {
-                    None => puct(parent_visits, 0.0, 0, *prior),
-                    Some(child) => puct(
-                        parent_visits,
-                        child.value.load(Ordering::Relaxed),
-                        child.visits.load(Ordering::Relaxed),
-                        *prior,
-                    ),
-                };
-                (puct_term, *action)
-            })
-            .collect::<Vec<_>>();
+            .enumerate()
+            .max_by(|(_, a), (_, b)| {
+                let a_child_id = a.child_id.load(Ordering::Relaxed);
+                let b_child_id = b.child_id.load(Ordering::Relaxed);
 
-        let best_action = puct_terms
-            .iter()
-            .max_by(|a, b| a.0.partial_cmp(&b.0).expect("NaN"))
+                let a_child_visits = match a_child_id {
+                    NO_CHILD => 0,
+                    EXPANDING_NODE => 0,
+                    _ => self.get_node(a_child_id).visits.load(Ordering::Relaxed),
+                };
+
+                let b_child_visits = match b_child_id {
+                    NO_CHILD => 0,
+                    EXPANDING_NODE => 0,
+                    _ => self.get_node(b_child_id).visits.load(Ordering::Relaxed),
+                };
+
+                let a_puct = puct(node_visits, 0.0, a_child_visits, a.prior);
+                let b_puct = puct(node_visits, 0.0, b_child_visits, b.prior);
+                a_puct.partial_cmp(&b_puct).expect("NaN")
+            })
             .expect("Failed to find best action")
-            .1;
-        best_action
+            .0;
+        Ok(edge_idx)
     }
 
-    pub fn backprop(&mut self, node: NodeId, reward: f32) {
+    pub fn backprop(&self, node: NodeId, reward: f32) -> Result<()> {
         let parent = self.get_node(node).parent.expect("Parent is None");
-        let parent_node = self.get_node_mut(parent);
-        parent_node.value.fetch_add(reward, Ordering::Relaxed);
+
+        let parent_node = self.get_node(parent);
+        parent_node
+            .accumulated_value
+            .fetch_add(reward, Ordering::Relaxed);
+
         parent_node
             .visits
             .fetch_add(1 - VIRTUAL_LOSS, Ordering::Relaxed);
+
         if parent_node.parent.is_none() {
-            return;
+            return Ok(());
         }
-        self.backprop(parent, reward);
+        self.backprop(parent, reward)?;
+        Ok(())
     }
 
     pub fn is_leaf(&self, node: NodeId) -> Result<bool> {
         let node = self.get_node(node);
-        Ok(node.children.is_empty())
+        Ok(node.expansion.get().is_none())
     }
 
-    pub fn _build_new_state(&self, node: NodeId, action: u64) -> Vec<u64> {
+    pub fn build_new_state(&self, node: NodeId, action: u64) -> Arc<[u64]> {
         let current_node = self.get_node(node);
-        let mut new_state = current_node.state.clone();
-        new_state.push(action);
-        new_state
+        current_node
+            .state
+            .iter()
+            .copied()
+            .chain(std::iter::once(action))
+            .collect::<Vec<_>>()
+            .into()
     }
 
-    pub async fn store_policy_value(&mut self, node: NodeId) -> Result<(BTreeMap<u32, f32>, f32)> {
-        let current_node = self.get_node(node);
-        let (priors, value) = policy_value_head(
-            &mut self.inference_client.clone(),
-            &current_node.state,
-            NUM_NODES_TO_EXPAND,
-        )
-        .await?;
+    pub async fn child_alloc(&self, parent: NodeId, edge: &Edge) -> Result<NodeId> {
+        loop {
+            let child_id = edge.child_id.load(Ordering::Acquire);
+            if child_id != NO_CHILD && child_id != EXPANDING_NODE {
+                return Ok(child_id);
+            }
 
-        let current_node_mut = self.get_node_mut(node);
-        current_node_mut.child_priors = priors.clone();
-        current_node_mut.value = AtomicF32::new(value);
-        Ok((priors, value))
+            match edge.child_id.compare_exchange(
+                NO_CHILD,
+                EXPANDING_NODE,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => {
+                    // we have acquired the right to allocate the child
+                    let new_node = Node::new(
+                        Some(parent),
+                        Some(edge.action),
+                        self.build_new_state(parent, edge.action as u64),
+                    );
+                    let new_node_id = self.node_alloc(new_node);
+                    edge.child_id.store(new_node_id, Ordering::Release);
+                    return Ok(new_node_id);
+                }
+                Err(child_id) => {
+                    if child_id == EXPANDING_NODE {
+                        loop {
+                            let child_id = edge.child_id.load(Ordering::Acquire);
+                            if child_id != EXPANDING_NODE {
+                                return Ok(child_id);
+                            }
+                            std::hint::spin_loop();
+                        }
+                    }
+                }
+            }
+        }
     }
 
-    pub async fn expand(&mut self, node: NodeId, next_action: u32) -> Result<NodeId> {
-        let new_state = self._build_new_state(node, next_action as u64);
-        let new_node = Node::new(Some(node), Some(next_action), new_state.clone(), 0.0);
-        let new_node_id = self.add_node(new_node);
+    pub async fn expand(&self, node: NodeId, edge: &Edge) -> Result<NodeId> {
+        let new_node_id = self.child_alloc(node, edge).await?;
         Ok(new_node_id)
     }
 }
 
 pub async fn mcts(tree: &mut Tree) -> Result<()> {
-    // populate priors and value for root node
-    tree.store_policy_value(ROOT_NODE_ID).await?;
-
     let mut iterations = 0;
 
     while iterations < MAX_ITERATIONS {
         let mut node = 0;
-        let mut next_action;
 
         // select next action
         loop {
             let node_obj = tree.get_node(node);
+            let expansion = node_obj.ensure_expansion(tree).await?;
+
             // add virtual loss to node to discourage it from being selected again, for parallel mcts
             node_obj.visits.fetch_add(VIRTUAL_LOSS, Ordering::Relaxed);
 
-            next_action = Some(tree.select(node_obj, &node_obj.child_priors));
+            let edge_idx = tree.select(node_obj, &expansion).await?;
+            let edge = &expansion.edges[edge_idx];
 
-            if next_action == Some(EOS_ACTION) {
+            if edge.action == EOS_ACTION {
                 break;
             }
 
-            // check if best_action child exists in node_obj.children
-            let best_action_child = node_obj
-                .children
-                .get(&(next_action.expect("Next action is None") as u32));
+            let child_id = edge.child_id.load(Ordering::Relaxed);
 
-            if let Some(child) = best_action_child {
-                node = *child;
-            } else {
+            if child_id == NO_CHILD {
+                node = tree.expand(node, edge).await?;
                 break;
             }
+
+            node = child_id;
         }
 
-        let new_node_id = tree
-            .expand(node, next_action.expect("Next action is None"))
-            .await?;
-
-        // populate priors and value for new node
-        let (_, value) = tree.store_policy_value(new_node_id).await?;
-
         // backpropagate value to root node
-        tree.backprop(new_node_id, value);
+        let expansion = tree.get_node(node).ensure_expansion(tree).await?;
+        tree.backprop(node, expansion.value)?;
 
         iterations += 1;
     }
