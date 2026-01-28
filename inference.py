@@ -12,7 +12,6 @@ import time
 import queue
 import os
 
-
 topk = 4
 hidden_size = 4096
 
@@ -31,9 +30,10 @@ class BatchInferenceService:
         self.per_gpu_queue = queue.Queue()
     
 
-    def sync_value_head(self):
+    def sync_weights(self):
         with self.value_head_sync_lock:
             self.value_head.load_state_dict(torch.load(self.value_head_path, map_location=f"cuda:{self.rank}"))
+            self.llm.load_weights(self.llm_path)
     
     @torch.inference_mode()
     def run_batch(self, input_ids, topk):
@@ -44,7 +44,9 @@ class BatchInferenceService:
 
         outputs = self.llm.generate(input_ids, sampling_params=sampling_params, return_hidden_states=True, return_logprob=True, top_logprobs_num=topk)
         policies = []
+        last_hidden_states = []
         values = []
+
         for output in outputs:
             meta_info = output["meta_info"]
             prefill_store = meta_info["hidden_states"][0]
@@ -52,8 +54,7 @@ class BatchInferenceService:
                 raise ValueError("Prefill store is empty")
             
             last_hidden_state = torch.tensor(prefill_store[-1], dtype=torch.float32).cuda()
-            value = self.value_head(last_hidden_state).item()
-            values.append(value)
+            last_hidden_states.append(last_hidden_state)
 
             top_logprobs = output["output_token_logprobs"][0][-1]
             if isinstance(top_logprobs, dict):
@@ -62,6 +63,9 @@ class BatchInferenceService:
             else:
                 raise ValueError("Top logprobs is not a dict")
             
+        with self.value_head_sync_lock:
+            values : torch.Tensor = self.value_head(torch.stack(last_hidden_states)).squeeze(-1) # [batch_size]
+        values = values.cpu().tolist()
         return policies, values
 
     def batch_worker(self):
@@ -110,7 +114,7 @@ def serve():
     worker = BatchInferenceService(rank)
     threading.Thread(target=worker.batch_worker, daemon=True).start()
 
-    server = grpc.server(futures.ThreadPoolExecutor(max_workers=10))
+    server = grpc.server(futures.ThreadPoolExecutor(max_workers=1))
     inference_pb2_grpc.add_InferenceServicer_to_server(InferenceServicer(worker), server)
     server.add_insecure_port(f'[::]:{port}')
     server.start()

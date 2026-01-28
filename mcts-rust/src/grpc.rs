@@ -1,26 +1,59 @@
 use std::collections::BTreeMap;
 
 use anyhow::Result;
-use tonic::{Request, transport::Channel};
+use tonic::{Request, Response, transport::Channel};
 
 pub use crate::inference;
-use inference::InferenceRequest;
 use inference::inference_client::InferenceClient;
+use inference::{InferenceRequest, InferenceResponse};
+use rand::seq::IteratorRandom;
 
-pub async fn get_client() -> Result<InferenceClient<Channel>> {
-    let host = std::env::var("INFERENCE_HOST").unwrap_or_else(|_| "http://[::1]:50051".to_string());
-    let client = InferenceClient::connect(host).await?;
-    Ok(client)
+pub struct InferenceClientPool {
+    clients: BTreeMap<usize, InferenceClient<Channel>>,
 }
 
-pub async fn policy_value_head(
-    client: &mut InferenceClient<Channel>,
-    state: &[u64],
-) -> Result<(BTreeMap<u32, f32>, f32)> {
-    let mut request = Request::new(InferenceRequest {
-        state: state.to_vec(),
-    });
-    request.set_timeout(std::time::Duration::from_secs(120));
-    let response = client.infer(request).await?.into_inner();
-    Ok((response.prior, response.value))
+impl InferenceClientPool {
+    pub const DEFAULT_PORT: usize = 50051;
+
+    pub async fn new(num_servers: usize) -> Result<Self> {
+        let mut clients = BTreeMap::new();
+        let base_port = Self::DEFAULT_PORT;
+        for i in 0..num_servers {
+            let port = base_port + i;
+            let client = Self::get_client(Some(port)).await?;
+            clients.insert(port, client);
+        }
+
+        Ok(Self { clients })
+    }
+
+    pub async fn get_client(port: Option<usize>) -> Result<InferenceClient<Channel>> {
+        let port = port.unwrap_or(Self::DEFAULT_PORT);
+        let host = format!("http://[::1]:{}", port);
+        let client = InferenceClient::connect(host).await?;
+        Ok(client)
+    }
+
+    pub async fn send_request(
+        &self,
+        request: Request<InferenceRequest>,
+    ) -> Result<Response<InferenceResponse>> {
+        let random_port = self.clients.keys().choose(&mut rand::rng()).unwrap();
+        let mut mutable_client = self
+            .clients
+            .get(random_port)
+            .expect("client not found")
+            .clone();
+        let response = mutable_client.infer(request).await?;
+        Ok(response)
+    }
+
+    pub async fn policy_value_head(&self, state: &[u64]) -> Result<(BTreeMap<u32, f32>, f32)> {
+        let mut request = Request::new(InferenceRequest {
+            state: state.to_vec(),
+        });
+        request.set_timeout(std::time::Duration::from_secs(120));
+        let response = self.send_request(request).await?.into_inner();
+        Ok((response.prior, response.value))
+    }
 }

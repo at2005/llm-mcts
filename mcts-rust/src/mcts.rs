@@ -1,11 +1,9 @@
-use crate::inference::inference_client::InferenceClient;
 use anyhow::Result;
 use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 use std::sync::{Arc, OnceLock};
-use tonic::transport::Channel;
 
 type NodeId = usize;
-use crate::grpc::{get_client, policy_value_head};
+use crate::grpc::InferenceClientPool;
 pub const ROOT_NODE_ID: NodeId = 0;
 const C_PUCT: f32 = 1.0;
 const VIRTUAL_LOSS: u32 = 1;
@@ -14,6 +12,7 @@ const EOS_ACTION: u32 = 100;
 const MAX_NODES: usize = 1000000;
 pub const NO_CHILD: usize = usize::MAX;
 pub const EXPANDING_NODE: usize = usize::MAX - 1;
+pub const NUM_SERVERS: usize = 8;
 
 #[derive(Debug)]
 pub struct AtomicF32 {
@@ -98,8 +97,10 @@ impl Node {
     pub async fn ensure_expansion(&self, tree: &Tree) -> Result<&Expansion> {
         self.expansion
             .get_or_try_init(|| async move {
-                let (priors, value) =
-                    policy_value_head(&mut tree.inference_client.clone(), &self.state).await?;
+                let (priors, value) = tree
+                    .inference_client_pool
+                    .policy_value_head(&self.state)
+                    .await?;
                 let edges: Vec<Edge> = priors
                     .iter()
                     .map(|(action, prior)| Edge::new(*prior, *action))
@@ -118,19 +119,19 @@ impl Node {
 
 pub struct Tree {
     pub nodes: Box<[OnceLock<Node>]>,
-    pub inference_client: InferenceClient<Channel>,
+    pub inference_client_pool: InferenceClientPool,
     pub size: AtomicUsize,
 }
 
 impl Tree {
     pub async fn new() -> Result<Self> {
-        let inference_client = get_client().await?;
+        let inference_client_pool = InferenceClientPool::new(NUM_SERVERS).await?;
         let mut nodes = Vec::with_capacity(MAX_NODES);
         nodes.resize_with(MAX_NODES, OnceLock::new);
 
         Ok(Self {
             nodes: nodes.into(),
-            inference_client: inference_client,
+            inference_client_pool,
             size: AtomicUsize::new(0),
         })
     }

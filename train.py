@@ -10,6 +10,7 @@ max_steps = 100
 train_batch_size = 128
 c_value_loss = 1.0
 c_policy_loss = 1.0
+max_wait_ms = 10 * 1000
 
 def train(rank: int):
     device = f"cuda:{rank}"
@@ -24,11 +25,18 @@ def train(rank: int):
         value_batch = []
         state_batch = []
         
+        deadline = time.monotonic() + (max_wait_ms / 1000.0)
+
         while len(policy_batch) < train_batch_size:
+
+            timeout = deadline - time.monotonic()
+            if timeout <= 0:
+                break
+
             data = redis.lpop("replay_buffer")
             data = json.loads(data)
+
             if data is None:
-                time.sleep(1)
                 continue
             
             state = data["state"]
@@ -38,15 +46,15 @@ def train(rank: int):
             policy_batch.append(policy)
             value_batch.append(value)
             state_batch.append(state)
-    
-        policy_batch = torch.tensor(policy_batch, dtype=torch.float32)
-        value_batch = torch.tensor(value_batch, dtype=torch.bfloat16)
-        state_batch = torch.tensor(state_batch, dtype=torch.long)
 
-        policies, values = model(state_batch)
+        policy_batch_tensor = torch.tensor(policy_batch, dtype=torch.float32).to(device)
+        value_batch_tensor = torch.tensor(value_batch, dtype=torch.bfloat16).to(device)
+        state_batch_tensor = torch.tensor(state_batch, dtype=torch.long).to(device)
 
-        value_loss = F.mse_loss(values, value_batch)
-        policy_loss = F.kl_div(policies, policy_batch, reduction="batchmean")
+        policies, values = model(state_batch_tensor)
+
+        value_loss = F.mse_loss(values, value_batch_tensor)
+        policy_loss = F.kl_div(policies, policy_batch_tensor, reduction="batchmean")
         total_loss = c_value_loss * value_loss + c_policy_loss * policy_loss
         total_loss.backward()
         optimizer.step()

@@ -1,4 +1,2 @@
-from inference import serve
-
 if __name__ == "__main__":
-    serve()
+    print("Hello MCTS world!")
