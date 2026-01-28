@@ -7,7 +7,6 @@ service Inference {
 
 message InferenceRequest {
     repeated uint64 state = 1;
-    uint32 topk = 2;
 }
 
 message InferenceResponse {

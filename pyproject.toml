@@ -8,4 +8,5 @@ dependencies = [
     "grpcio>=1.76.0",
     "grpcio-tools>=1.76.0",
     "torch>=2.8.0",
+    "transformers>=4.57.6",
 ]

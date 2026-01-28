@@ -9,7 +9,6 @@ use crate::grpc::{get_client, policy_value_head};
 pub const ROOT_NODE_ID: NodeId = 0;
 const C_PUCT: f32 = 1.0;
 const VIRTUAL_LOSS: u32 = 1;
-const NUM_NODES_TO_EXPAND: usize = 100;
 const MAX_ITERATIONS: usize = 1000;
 const EOS_ACTION: u32 = 100;
 const MAX_NODES: usize = 1000000;
@@ -102,7 +101,6 @@ impl Node {
                 let (priors, value) = policy_value_head(
                     &mut tree.inference_client.clone(),
                     &self.state,
-                    NUM_NODES_TO_EXPAND,
                 )
                 .await?;
                 let edges: Vec<Edge> = priors
@@ -163,7 +161,7 @@ pub fn puct(visits: u32, value: f32, child_visits: u32, prior: f32) -> f32 {
 }
 
 impl Tree {
-    pub async fn select(&self, node: &Node, expansion: &Expansion) -> Result<usize> {
+    pub fn select(&self, node: &Node, expansion: &Expansion) -> Result<usize> {
         let node_visits = node.visits.load(Ordering::Relaxed);
         let edge_idx = expansion
             .edges
@@ -222,10 +220,6 @@ impl Tree {
         node_obj
             .visits
             .fetch_add(1 - VIRTUAL_LOSS, Ordering::Relaxed);
-
-        if node_obj.parent.is_none() {
-            return Ok(());
-        }
 
         if let Some(parent) = node_obj.parent {
             self.backprop(parent, reward)?;
@@ -309,17 +303,20 @@ pub async fn mcts(tree: &Tree) -> Result<()> {
             // add virtual loss to node to discourage it from being selected again, for parallel mcts
             node_obj.visits.fetch_add(VIRTUAL_LOSS, Ordering::Relaxed);
 
-            let edge_idx = tree.select(node_obj, &expansion).await?;
+            let edge_idx = tree.select(node_obj, &expansion)?;
             let edge = &expansion.edges[edge_idx];
 
             if edge.action == EOS_ACTION {
                 break;
             }
 
-            let child_id = edge.child_id.load(Ordering::Relaxed);
+            let child_id = edge.child_id.load(Ordering::Acquire);
 
-            if child_id == NO_CHILD {
+            if child_id == NO_CHILD || child_id == EXPANDING_NODE {
                 node = tree.expand(node, edge).await?;
+                tree.get_node(node)
+                    .visits
+                    .fetch_add(VIRTUAL_LOSS, Ordering::Relaxed);
                 break;
             }
 

@@ -16,11 +16,9 @@ pub async fn get_client() -> Result<InferenceClient<Channel>> {
 pub async fn policy_value_head(
     client: &mut InferenceClient<Channel>,
     state: &[u64],
-    topk: usize,
 ) -> Result<(BTreeMap<u32, f32>, f32)> {
     let mut request = Request::new(InferenceRequest {
         state: state.to_vec(),
-        topk: topk as u32,
     });
     request.set_timeout(std::time::Duration::from_secs(120));
     let response = client.infer(request).await?.into_inner();
