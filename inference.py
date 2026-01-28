@@ -81,16 +81,16 @@ class BatchInferenceService:
                 except queue.Empty:
                     break
             
-            batch_input_ids = [item[0] for item in batch_input_ids]
-            futures = [item[1] for item in batch_input_ids]
+            batch_input_ids = [item[0] for item in batch]
+            futures = [item[1] for item in batch]
 
             try:
-                policies, values = self.run_batch(batch_input_ids, topk)
-                for future, policy, value in zip(futures, policies, values):
-                    future.set_result((policy, value))
+                policy, value = self.run_batch(batch_input_ids, topk)
+                for fut, pol, val in zip(futures, policy, value):
+                    fut.set_result((pol, val))
             except Exception as e:
-                for future in futures:
-                    future.set_exception(e)
+                for fut in futures:
+                    fut.set_exception(e)
             
 
 class InferenceServicer(inference_pb2_grpc.InferenceServicer):
@@ -100,12 +100,13 @@ class InferenceServicer(inference_pb2_grpc.InferenceServicer):
     def infer(self, request : InferenceRequest, context):
         fut = Future()
         self.batch_inference_service.per_gpu_queue.put((request.state, fut))
-        policies, values = fut.result(timeout=self.batch_inference_service.max_wait_ms / 1000.0)
+        policies, values = fut.result(timeout=3 * self.batch_inference_service.max_wait_ms / 1000.0)
         return inference_pb2.InferenceResponse(policy=policies, value=values)
 
 def serve():
-    rank = os.environ.get("RANK", 0)
-    port = os.environ.get("PORT", 50050 + rank)
+    rank = int(os.environ.get("RANK", 0))
+    port = int(os.environ.get("PORT", 50050 + rank))
+
     worker = BatchInferenceService(rank)
     threading.Thread(target=worker.batch_worker, daemon=True).start()
 

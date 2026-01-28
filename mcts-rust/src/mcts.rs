@@ -98,11 +98,8 @@ impl Node {
     pub async fn ensure_expansion(&self, tree: &Tree) -> Result<&Expansion> {
         self.expansion
             .get_or_try_init(|| async move {
-                let (priors, value) = policy_value_head(
-                    &mut tree.inference_client.clone(),
-                    &self.state,
-                )
-                .await?;
+                let (priors, value) =
+                    policy_value_head(&mut tree.inference_client.clone(), &self.state).await?;
                 let edges: Vec<Edge> = priors
                     .iter()
                     .map(|(action, prior)| Edge::new(*prior, *action))
