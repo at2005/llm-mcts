@@ -13,6 +13,8 @@ import time
 import queue
 import os
 import re
+import numpy as np
+from typing import List, Tuple
 
 topk = 4
 hidden_size = 4096
@@ -37,6 +39,9 @@ class BatchInferenceService:
             self.value_head.load_state_dict(torch.load(self.value_head_path, map_location=f"cuda:{self.rank}"))
             self.llm.load_weights(self.llm_path)
     
+    def renormalize_policies(self, policies: List[List[Tuple[int, float]]]) -> List[List[Tuple[int, float]]]:
+        pass
+
     @torch.inference_mode()
     def run_batch(self, input_ids, topk):
         sampling_params = {
@@ -55,12 +60,13 @@ class BatchInferenceService:
             if len(prefill_store) == 0:
                 raise ValueError("Prefill store is empty")
             
-            last_hidden_state = torch.tensor(prefill_store[-1], dtype=torch.float32).cuda()
+            last_hidden_state = torch.tensor(prefill_store[-1], dtype=torch.float32).cuda() # [hidden_size]
             last_hidden_states.append(last_hidden_state)
 
             top_logprobs = output["output_token_logprobs"][0][-1]
+
             if isinstance(top_logprobs, dict):
-                policy = sorted(top_logprobs.items(), key=lambda x: x[1], reverse=True)
+                policy = [(int(k), np.exp(v)) for k, v in top_logprobs.items()]
                 policies.append(policy)
             else:
                 raise ValueError("Top logprobs is not a dict")
@@ -69,6 +75,9 @@ class BatchInferenceService:
             values : torch.Tensor = self.value_head(torch.stack(last_hidden_states)).squeeze(-1) # [batch_size]
         values = values.cpu().tolist()
         return policies, values
+
+
+
 
     def batch_worker(self):
         while True:
@@ -131,3 +140,6 @@ def serve():
     server.start()
     print(f'Server started on port {port}')
     server.wait_for_termination()
+
+if __name__ == "__main__":
+    serve()

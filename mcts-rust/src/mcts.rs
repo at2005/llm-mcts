@@ -322,6 +322,7 @@ impl Tree {
 
 pub async fn mcts(tree: &Tree) -> Result<()> {
     let mut iterations = 0;
+    let mut eos_encountered = false;
 
     while iterations < MAX_ITERATIONS {
         let mut node = 0;
@@ -338,6 +339,7 @@ pub async fn mcts(tree: &Tree) -> Result<()> {
             let edge = &expansion.edges[edge_idx];
 
             if edge.action == EOS_ACTION {
+                eos_encountered = true;
                 break;
             }
 
@@ -354,8 +356,22 @@ pub async fn mcts(tree: &Tree) -> Result<()> {
             node = child_id;
         }
 
+        let node_obj = tree.get_node(node);
+
+        if eos_encountered {
+            let state = node_obj.state.iter().copied().collect::<Vec<_>>();
+            let reward = tree
+                .inference_client_pool
+                .send_grader_request(tree.episode_id, tree.prompt_id, state)
+                .await?
+                .into_inner()
+                .reward;
+            tree.backprop(node, reward)?;
+            continue;
+        }
+
         // backpropagate value to root node
-        let expansion = tree.get_node(node).ensure_expansion(tree).await?;
+        let expansion = node_obj.ensure_expansion(tree).await?;
         tree.backprop(node, expansion.value)?;
 
         iterations += 1;

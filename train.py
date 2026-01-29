@@ -34,28 +34,45 @@ def train(rank: int):
                 break
 
             data = redis.lpop("replay_buffer")
-            data = json.loads(data)
-
             if data is None:
                 continue
-            
-            state = data["state"]
-            policy = data["policy"]
-            value = data["value"]
 
-            policy_batch.append(policy)
-            value_batch.append(value)
+            data = json.loads(data)
+
+            state = data["state"]
+            
+            # dictionary
+            priors = data["priors"]
+
+            reward = data["reward"]
+
+            policy_batch.append(priors)
+            value_batch.append(reward)
             state_batch.append(state)
 
-        policy_batch_tensor = torch.tensor(policy_batch, dtype=torch.float32).to(device)
         value_batch_tensor = torch.tensor(value_batch, dtype=torch.bfloat16).to(device)
         state_batch_tensor = torch.tensor(state_batch, dtype=torch.long).to(device)
 
+        probs = []
+        actions = []
+        batch_idx = []
+        for b in range(len(policy_batch)):
+            for action, prob in policy_batch[b]:
+                probs.append(prob)
+                actions.append(action)
+                batch_idx.append(b)
+        
+        probs = torch.tensor(probs, dtype=torch.float32).to(device)
+        actions = torch.tensor(actions, dtype=torch.long).to(device)
+        batch_idx = torch.tensor(batch_idx, dtype=torch.long).to(device)
+
         policies, values = model(state_batch_tensor)
 
+        selected_logprobs : torch.Tensor = policies[batch_idx, actions]
+        policy_cross_entropy = - (probs * selected_logprobs).mean()
+
         value_loss = F.mse_loss(values, value_batch_tensor)
-        policy_loss = F.cross_entropy(policies, policy_batch_tensor)
-        total_loss = c_value_loss * value_loss + c_policy_loss * policy_loss
+        total_loss = c_value_loss * value_loss + c_policy_loss * policy_cross_entropy 
         total_loss.backward()
         optimizer.step()
         scheduler.step()
