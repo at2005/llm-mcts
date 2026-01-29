@@ -24,7 +24,7 @@ _sym_db = _symbol_database.Default()
 
 
 
-DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x0finference.proto\x12\tinference\"/\n\x10InferenceRequest\x12\r\n\x05state\x18\x01 \x03(\x04\x12\x0c\n\x04topk\x18\x02 \x01(\r\"\x88\x01\n\x11InferenceResponse\x12\x36\n\x05prior\x18\x01 \x03(\x0b\x32\'.inference.InferenceResponse.PriorEntry\x12\r\n\x05value\x18\x02 \x01(\x02\x1a,\n\nPriorEntry\x12\x0b\n\x03key\x18\x01 \x01(\r\x12\r\n\x05value\x18\x02 \x01(\x02:\x02\x38\x01\x32O\n\tInference\x12\x42\n\x05infer\x12\x1b.inference.InferenceRequest\x1a\x1c.inference.InferenceResponseb\x06proto3')
+DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x0finference.proto\x12\tinference\"!\n\x10InferenceRequest\x12\r\n\x05state\x18\x01 \x03(\x04\"\x88\x01\n\x11InferenceResponse\x12\x36\n\x05prior\x18\x01 \x03(\x0b\x32\'.inference.InferenceResponse.PriorEntry\x12\r\n\x05value\x18\x02 \x01(\x02\x1a,\n\nPriorEntry\x12\x0b\n\x03key\x18\x01 \x01(\r\x12\r\n\x05value\x18\x02 \x01(\x02:\x02\x38\x01\"E\n\rGraderRequest\x12\r\n\x05state\x18\x01 \x03(\x04\x12\x12\n\nepisode_id\x18\x02 \x01(\r\x12\x11\n\tprompt_id\x18\x03 \x01(\r\" \n\x0eGraderResponse\x12\x0e\n\x06reward\x18\x01 \x01(\x02\x32\x8e\x01\n\tInference\x12\x42\n\x05infer\x12\x1b.inference.InferenceRequest\x1a\x1c.inference.InferenceResponse\x12=\n\x06grader\x12\x18.inference.GraderRequest\x1a\x19.inference.GraderResponseb\x06proto3')
 
 _globals = globals()
 _builder.BuildMessageAndEnumDescriptors(DESCRIPTOR, _globals)
@@ -34,11 +34,15 @@ if not _descriptor._USE_C_DESCRIPTORS:
   _globals['_INFERENCERESPONSE_PRIORENTRY']._loaded_options = None
   _globals['_INFERENCERESPONSE_PRIORENTRY']._serialized_options = b'8\001'
   _globals['_INFERENCEREQUEST']._serialized_start=30
-  _globals['_INFERENCEREQUEST']._serialized_end=77
-  _globals['_INFERENCERESPONSE']._serialized_start=80
-  _globals['_INFERENCERESPONSE']._serialized_end=216
-  _globals['_INFERENCERESPONSE_PRIORENTRY']._serialized_start=172
-  _globals['_INFERENCERESPONSE_PRIORENTRY']._serialized_end=216
-  _globals['_INFERENCE']._serialized_start=218
-  _globals['_INFERENCE']._serialized_end=297
+  _globals['_INFERENCEREQUEST']._serialized_end=63
+  _globals['_INFERENCERESPONSE']._serialized_start=66
+  _globals['_INFERENCERESPONSE']._serialized_end=202
+  _globals['_INFERENCERESPONSE_PRIORENTRY']._serialized_start=158
+  _globals['_INFERENCERESPONSE_PRIORENTRY']._serialized_end=202
+  _globals['_GRADERREQUEST']._serialized_start=204
+  _globals['_GRADERREQUEST']._serialized_end=273
+  _globals['_GRADERRESPONSE']._serialized_start=275
+  _globals['_GRADERRESPONSE']._serialized_end=307
+  _globals['_INFERENCE']._serialized_start=310
+  _globals['_INFERENCE']._serialized_end=452
 # @@protoc_insertion_point(module_scope)
