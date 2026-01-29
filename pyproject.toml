@@ -7,7 +7,11 @@ requires-python = ">=3.9"
 dependencies = [
     "grpcio>=1.76.0",
     "grpcio-tools>=1.76.0",
+    "pybase64>=1.4.3",
+    "pydantic>=2.12.5",
     "redis>=7.0.1",
+    "sglang>=0.4.10.post2",
     "torch>=2.8.0",
     "transformers>=4.57.6",
+    "zmq>=0.0.0",
 ]

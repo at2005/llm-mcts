@@ -9,6 +9,7 @@ import sglang as sgl
 from transformers import AutoTokenizer
 from model import ValueHead, model_name
 from concurrent.futures import Future
+from graders import Graders
 import time
 import queue
 import os
@@ -111,6 +112,7 @@ class BatchInferenceService:
 class InferenceServicer(inference_pb2_grpc.InferenceServicer):
     def __init__(self, batch_inference_service: BatchInferenceService):
         self.batch_inference_service = batch_inference_service
+        self.graders = Graders()
 
     def infer(self, request : InferenceRequest, context):
         fut = Future()
@@ -123,9 +125,8 @@ class InferenceServicer(inference_pb2_grpc.InferenceServicer):
         prompt_id = request.prompt_id
         string_state = self.batch_inference_service.tokenizer.decode(state)
         # parse answer in <answer>...</answer>
-        answer = re.search(r'<answer>(.*?)</answer>', string_state).group(1)
-        return inference_pb2.GraderResponse(reward=0.0)
-
+        reward = self.graders.maths_grader(string_state, prompt_id)
+        return inference_pb2.GraderResponse(reward=reward)
 
 def serve():
     rank = int(os.environ.get("RANK", 0))
