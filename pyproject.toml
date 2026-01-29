@@ -1,18 +1,27 @@
 [project]
 name = "mcts"
 version = "0.1.0"
-description = "Add your description here"
-readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
-    "grpcio==1.75.1",
-    "grpcio-tools>=1.75.1",
-    "pillow>=11.3.0",
-    "pybase64>=1.4.3",
-    "pydantic>=2.12.5",
-    "redis>=7.0.1",
-    "sglang[all]==0.5.8",
-    "torch>=2.8.0",
-    "transformers>=4.57.1",
-    "zmq>=0.0.0",
+  "grpcio==1.75.1",
+  "grpcio-tools>=1.75.1",
+  "pillow>=11.3.0",
+  "pybase64>=1.4.3",
+  "pydantic>=2.12.5",
+  "redis>=7.0.1",
+  "torch>=2.8.0",
+  "transformers>=4.57.1",
+  "pyzmq>=25",
+]
+
+[dependency-groups]
+linux = [
+  "sglang==0.5.8",
+  "nvidia-cutlass-dsl==4.3.5; sys_platform == 'linux'",
+]
+
+[tool.uv]
+environments = [
+  "sys_platform == 'darwin'",
+  "sys_platform == 'linux'",
 ]
