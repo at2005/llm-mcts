@@ -2,15 +2,17 @@ import grpc
 from concurrent import futures
 import inference_pb2_grpc
 import inference_pb2
-from inference_pb2 import InferenceRequest
+from inference_pb2 import InferenceRequest, GraderRequest
 import torch
 import threading
 import sglang as sgl
+from transformers import AutoTokenizer
 from model import ValueHead, model_name
 from concurrent.futures import Future
 import time
 import queue
 import os
+import re
 
 topk = 4
 hidden_size = 4096
@@ -20,7 +22,7 @@ class BatchInferenceService:
         self.value_head = ValueHead(hidden_size).to(f"cuda:{rank}")
         self.value_head_sync_lock = threading.Lock()
         self.value_head_path = "value_head.pth"
-
+        self.tokenizer = AutoTokenizer.from_pretrained(model_name)
         self.llm = sgl.Engine(model=model_name)
         # run every 8 requests
         self.batch_size = 8
@@ -106,6 +108,15 @@ class InferenceServicer(inference_pb2_grpc.InferenceServicer):
         self.batch_inference_service.per_gpu_queue.put((request.state, fut))
         policies, values = fut.result(timeout=3 * self.batch_inference_service.max_wait_ms / 1000.0)
         return inference_pb2.InferenceResponse(policy=policies, value=values)
+    
+    def grader(self, request : GraderRequest, context):
+        state = request.state
+        prompt_id = request.prompt_id
+        string_state = self.batch_inference_service.tokenizer.decode(state)
+        # parse answer in <answer>...</answer>
+        answer = re.search(r'<answer>(.*?)</answer>', string_state).group(1)
+        return inference_pb2.GraderResponse(reward=0.0)
+
 
 def serve():
     rank = int(os.environ.get("RANK", 0))

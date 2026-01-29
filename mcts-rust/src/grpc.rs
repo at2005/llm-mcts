@@ -5,7 +5,7 @@ use tonic::{Request, Response, transport::Channel};
 
 pub use crate::inference;
 use inference::inference_client::InferenceClient;
-use inference::{InferenceRequest, InferenceResponse};
+use inference::{GraderRequest, GraderResponse, InferenceRequest, InferenceResponse};
 use rand::seq::IteratorRandom;
 
 pub struct InferenceClientPool {
@@ -45,6 +45,30 @@ impl InferenceClientPool {
             .expect("client not found")
             .clone();
         let response = mutable_client.infer(request).await?;
+        Ok(response)
+    }
+
+    pub async fn send_grader_request(
+        &self,
+        episode_id: u32,
+        prompt_id: u32,
+        state: Vec<u64>,
+    ) -> Result<Response<GraderResponse>> {
+        let grader_request = GraderRequest {
+            episode_id,
+            prompt_id,
+            state,
+        };
+
+        let random_port = self.clients.keys().choose(&mut rand::rng()).unwrap();
+
+        let mut mutable_client = self
+            .clients
+            .get(random_port)
+            .expect("client not found")
+            .clone();
+
+        let response = mutable_client.grader(grader_request).await?;
         Ok(response)
     }
 

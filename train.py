@@ -54,7 +54,7 @@ def train(rank: int):
         policies, values = model(state_batch_tensor)
 
         value_loss = F.mse_loss(values, value_batch_tensor)
-        policy_loss = F.kl_div(policies, policy_batch_tensor, reduction="batchmean")
+        policy_loss = F.cross_entropy(policies, policy_batch_tensor)
         total_loss = c_value_loss * value_loss + c_policy_loss * policy_loss
         total_loss.backward()
         optimizer.step()

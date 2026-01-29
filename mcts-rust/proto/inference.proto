@@ -17,6 +17,8 @@ message InferenceResponse {
 
 message GraderRequest {
     repeated uint64 state = 1;
+    uint32 episode_id = 2;
+    uint32 prompt_id = 3;
 }
 
 message GraderResponse {

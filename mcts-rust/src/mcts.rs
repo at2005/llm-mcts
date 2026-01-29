@@ -1,9 +1,12 @@
 use anyhow::Result;
+use redis::{AsyncCommands, aio::ConnectionManager};
+use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 use std::sync::{Arc, OnceLock};
 
 type NodeId = usize;
 use crate::grpc::InferenceClientPool;
+
 pub const ROOT_NODE_ID: NodeId = 0;
 const C_PUCT: f32 = 1.0;
 const VIRTUAL_LOSS: u32 = 1;
@@ -13,6 +16,23 @@ const MAX_NODES: usize = 1000000;
 pub const NO_CHILD: usize = usize::MAX;
 pub const EXPANDING_NODE: usize = usize::MAX - 1;
 pub const NUM_SERVERS: usize = 8;
+pub const REPLAY_BUFFER_KEY: &str = "replay_buffer";
+
+pub fn get_redis_url() -> String {
+    format!(
+        "redis://{}:{}",
+        std::env::var("REDIS_HOST").unwrap_or("127.0.0.1".to_string()),
+        std::env::var("REDIS_PORT").unwrap_or("6379".to_string())
+    )
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct ReplayBufferEntry {
+    pub state: Vec<u64>,
+    pub action: u32,
+    pub priors: Vec<(u32, f32)>,
+    pub reward: f32,
+}
 
 #[derive(Debug)]
 pub struct AtomicF32 {
@@ -121,10 +141,12 @@ pub struct Tree {
     pub nodes: Box<[OnceLock<Node>]>,
     pub inference_client_pool: InferenceClientPool,
     pub size: AtomicUsize,
+    pub episode_id: u32,
+    pub prompt_id: u32,
 }
 
 impl Tree {
-    pub async fn new() -> Result<Self> {
+    pub async fn new(episode_id: u32, prompt_id: u32) -> Result<Self> {
         let inference_client_pool = InferenceClientPool::new(NUM_SERVERS).await?;
         let mut nodes = Vec::with_capacity(MAX_NODES);
         nodes.resize_with(MAX_NODES, OnceLock::new);
@@ -133,6 +155,8 @@ impl Tree {
             nodes: nodes.into(),
             inference_client_pool,
             size: AtomicUsize::new(0),
+            episode_id,
+            prompt_id,
         })
     }
 
@@ -159,7 +183,12 @@ pub fn puct(visits: u32, value: f32, child_visits: u32, prior: f32) -> f32 {
 }
 
 impl Tree {
-    pub fn select(&self, node: &Node, expansion: &Expansion) -> Result<usize> {
+    pub fn select(
+        &self,
+        node: &Node,
+        expansion: &Expansion,
+        greedy_selection: bool,
+    ) -> Result<usize> {
         let node_visits = node.visits.load(Ordering::Relaxed);
         let edge_idx = expansion
             .edges
@@ -186,6 +215,10 @@ impl Tree {
                         .accumulated_value
                         .load(Ordering::Relaxed),
                 };
+
+                if greedy_selection {
+                    return a_value.partial_cmp(&b_value).expect("NaN");
+                }
 
                 let a_child_visits = match a_child_id {
                     NO_CHILD => 0,
@@ -301,7 +334,7 @@ pub async fn mcts(tree: &Tree) -> Result<()> {
             // add virtual loss to node to discourage it from being selected again, for parallel mcts
             node_obj.visits.fetch_add(VIRTUAL_LOSS, Ordering::Relaxed);
 
-            let edge_idx = tree.select(node_obj, &expansion)?;
+            let edge_idx = tree.select(node_obj, &expansion, false)?;
             let edge = &expansion.edges[edge_idx];
 
             if edge.action == EOS_ACTION {
@@ -328,4 +361,66 @@ pub async fn mcts(tree: &Tree) -> Result<()> {
         iterations += 1;
     }
     Ok(())
+}
+
+pub async fn greedy_select(con: &mut ConnectionManager, tree: &Tree) -> Result<Vec<NodeId>> {
+    let mut nodes = Vec::new();
+    let mut node = 0;
+    let mut replay_buffer = Vec::new();
+    while !tree.is_leaf(node)? {
+        // we want to push all nodes along this path to the replay buffer
+        let node_obj = tree.get_node(node);
+        let priors = node_obj
+            .expansion
+            .get()
+            .expect("Expansion is None")
+            .edges
+            .iter()
+            .map(|edge| (edge.action, edge.prior))
+            .collect::<Vec<_>>();
+
+        replay_buffer.push((
+            node_obj.state.iter().copied().collect::<Vec<_>>(),
+            node_obj.action.unwrap(),
+            priors,
+        ));
+
+        let expansion = tree.get_node(node).ensure_expansion(tree).await?;
+        let edge_idx = tree.select(tree.get_node(node), &expansion, true)?;
+        let edge = &expansion.edges[edge_idx];
+        node = edge.child_id.load(Ordering::Relaxed);
+        nodes.push(node);
+        if edge.action == EOS_ACTION {
+            break;
+        }
+    }
+
+    let node_obj = tree.get_node(node);
+    let state = node_obj.state.iter().copied().collect::<Vec<_>>();
+
+    let grader_response = tree
+        .inference_client_pool
+        .send_grader_request(tree.episode_id, tree.prompt_id, state)
+        .await?;
+    let reward = grader_response.into_inner().reward;
+
+    let serialized_replay_buffer = replay_buffer
+        .iter()
+        .map(|(state, action, priors)| {
+            let entry = ReplayBufferEntry {
+                state: state.to_vec(),
+                action: action.clone(),
+                priors: priors.clone(),
+                reward,
+            };
+            let serialized = serde_json::to_string(&entry).unwrap();
+            serialized
+        })
+        .collect::<Vec<String>>();
+
+    for serialized in serialized_replay_buffer {
+        let _: () = con.lpush(REPLAY_BUFFER_KEY, serialized).await?;
+    }
+
+    Ok(nodes)
 }
