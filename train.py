@@ -4,6 +4,8 @@ from model import TrainingModel
 from redis import Redis
 import time
 import json
+import threading
+import os
 
 redis = Redis(host="localhost", port=6379, db=0)
 max_steps = 100
@@ -11,6 +13,32 @@ train_batch_size = 128
 c_value_loss = 1.0
 c_policy_loss = 1.0
 max_wait_ms = 10 * 1000
+
+value_path = "value_head.pth"
+policy_path = "llm.pth"
+
+def publish_weights(model : TrainingModel):
+    tmp_value_path = f"/tmp/{value_path}"
+    tmp_policy_path = f"/tmp/{policy_path}"
+
+    with open(tmp_value_path, "wb") as f:
+        torch.save(model.value_head.state_dict(), f)
+    with open(tmp_policy_path, "wb") as f:
+        torch.save(model.llm.state_dict(), f)
+    
+    os.rename(tmp_value_path, value_path)
+    os.rename(tmp_policy_path, policy_path)
+    
+    version = int(redis.incr("weights:version_counter"))
+    meta = {"version": version, "value_head": value_path, "llm": policy_path, "ts": time.time()}
+
+    pipe = redis.pipeline()
+    pipe.set(f"weights:meta:{version}", json.dumps(meta))
+    pipe.set("weights:latest_version", version)
+    pipe.execute()
+
+    redis.publish("weights:updates", json.dumps({"version": version}))
+    
 
 def train(rank: int):
     device = f"cuda:{rank}"
@@ -21,6 +49,9 @@ def train(rank: int):
     global_step = 0
 
     while global_step < max_steps:
+        if rank == 0 and global_step % 10 == 0:
+            publish_weights(model)
+
         policy_batch = []
         value_batch = []
         state_batch = []

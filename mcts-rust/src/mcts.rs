@@ -15,8 +15,15 @@ const EOS_ACTION: u32 = 100;
 const MAX_NODES: usize = 1000000;
 pub const NO_CHILD: usize = usize::MAX;
 pub const EXPANDING_NODE: usize = usize::MAX - 1;
-pub const NUM_SERVERS: usize = 8;
+
 pub const REPLAY_BUFFER_KEY: &str = "replay_buffer";
+
+pub fn get_num_inference_gpus() -> usize {
+    std::env::var("NUM_INFERENCE_GPUS")
+        .unwrap_or("4".to_string())
+        .parse()
+        .unwrap()
+}
 
 pub fn get_redis_url() -> String {
     format!(
@@ -147,7 +154,7 @@ pub struct Tree {
 
 impl Tree {
     pub async fn new(episode_id: u32, prompt_id: u32) -> Result<Self> {
-        let inference_client_pool = InferenceClientPool::new(NUM_SERVERS).await?;
+        let inference_client_pool = InferenceClientPool::new(get_num_inference_gpus()).await?;
         let mut nodes = Vec::with_capacity(MAX_NODES);
         nodes.resize_with(MAX_NODES, OnceLock::new);
 
