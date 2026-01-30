@@ -6,7 +6,7 @@ from inference_pb2 import InferenceRequest, GraderRequest
 import torch
 import threading
 import sglang as sgl
-from transformers import AutoTokenizer
+from transformers import AutoTokenizer, AutoModelForCausalLM
 from model import ValueHead, model_name
 from concurrent.futures import Future
 from graders import Graders
@@ -16,17 +16,25 @@ import os
 import re
 import numpy as np
 from typing import List, Tuple
+import torch.nn as nn
+import torch.nn.functional as F
+import gc
 
 topk = 4
 hidden_size = 4096
+vocab_size = 128256
+    
+    
 
 class BatchInferenceService:
     def __init__(self, rank: int):
-        self.value_head = ValueHead(hidden_size).to(f"cuda:{rank}")
+        self.value_head = ValueHead(hidden_size).to(f"cuda:{rank}").eval()
         self.value_head_sync_lock = threading.Lock()
         self.value_head_path = "value_head.pth"
         self.tokenizer = AutoTokenizer.from_pretrained(model_name)
-        self.llm = sgl.Engine(model=model_name)
+        self.llm = sgl.Engine(model_path=model_name, enable_return_hidden_states=True)
+        self.lm_head = nn.Linear(hidden_size, vocab_size, bias=False).to(dtype=torch.bfloat16, device=f"cuda:{rank}")
+
         # run every 8 requests
         self.batch_size = 8
         self.rank = rank
@@ -34,6 +42,16 @@ class BatchInferenceService:
 
         self.per_gpu_queue = queue.Queue()
     
+        self.load_lm_head()
+
+    def load_lm_head(self):
+        model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.bfloat16).to(f"cuda:{self.rank}")
+        lm_head_weight = model.lm_head.weight.detach().clone()
+        self.lm_head.weight.data.copy_(lm_head_weight)
+        del model
+        gc.collect()
+        torch.cuda.empty_cache()
+
 
     def sync_weights(self):
         with self.value_head_sync_lock:
@@ -47,10 +65,10 @@ class BatchInferenceService:
     def run_batch(self, input_ids, topk):
         sampling_params = {
             "temperature": 0.0,
-            "max_tokens": 1,
+            "max_new_tokens": 1,
         }
 
-        outputs = self.llm.generate(input_ids, sampling_params=sampling_params, return_hidden_states=True, return_logprob=True, top_logprobs_num=topk)
+        outputs = self.llm.generate(input_ids=input_ids, sampling_params=sampling_params, return_hidden_states=True, return_logprob=True, top_logprobs_num=topk)
         policies = []
         last_hidden_states = []
         values = []
@@ -61,20 +79,27 @@ class BatchInferenceService:
             if len(prefill_store) == 0:
                 raise ValueError("Prefill store is empty")
             
-            last_hidden_state = torch.tensor(prefill_store[-1], dtype=torch.float32).cuda() # [hidden_size]
+            last_hidden_state = torch.tensor(prefill_store[-1], dtype=torch.bfloat16).cuda() # [hidden_size]
             last_hidden_states.append(last_hidden_state)
 
-            top_logprobs = output["output_token_logprobs"][0][-1]
+        
+        last_hidden_states = torch.stack(last_hidden_states)
 
-            if isinstance(top_logprobs, dict):
-                policy = [(int(k), np.exp(v)) for k, v in top_logprobs.items()]
-                policies.append(policy)
-            else:
-                raise ValueError("Top logprobs is not a dict")
-            
         with self.value_head_sync_lock:
-            values : torch.Tensor = self.value_head(torch.stack(last_hidden_states)).squeeze(-1) # [batch_size]
+            values : torch.Tensor = self.value_head(last_hidden_states.float()).squeeze(-1) # [batch_size]
+
         values = values.cpu().tolist()
+
+        logits = self.lm_head(last_hidden_states)
+        top_logits, top_indices = torch.topk(logits, topk, dim=-1)
+
+        top_probs = F.log_softmax(top_logits, dim=-1)
+
+        top_probs = top_probs.cpu().tolist()
+        top_indices = top_indices.cpu().tolist()
+
+        policies = [{int(i): np.exp(p) for i, p in zip(indices, probs)} for indices, probs in zip(top_indices, top_probs)]
+        
         return policies, values
 
 
@@ -116,7 +141,8 @@ class InferenceServicer(inference_pb2_grpc.InferenceServicer):
 
     def infer(self, request : InferenceRequest, context):
         fut = Future()
-        self.batch_inference_service.per_gpu_queue.put((request.state, fut))
+        state = list(request.state)
+        self.batch_inference_service.per_gpu_queue.put((state, fut))
         policies, values = fut.result(timeout=3 * self.batch_inference_service.max_wait_ms / 1000.0)
         return inference_pb2.InferenceResponse(policy=policies, value=values)
     
@@ -127,6 +153,22 @@ class InferenceServicer(inference_pb2_grpc.InferenceServicer):
         # parse answer in <answer>...</answer>
         reward = self.graders.maths_grader(string_state, prompt_id)
         return inference_pb2.GraderResponse(reward=reward)
+
+
+def test():
+    worker = BatchInferenceService(rank)
+    messages = [{"role": "user", "content": "Complete the sentence, with just one word: The capital of France is: "}]
+    test_state = worker.tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+    test_state = worker.tokenizer.encode(test_state)
+
+    test_policy, test_value = worker.run_batch([test_state], topk)
+    print(test_policy)
+    max_token = max(test_policy[0], key=test_policy[0].get)
+    print(max_token)
+    decoded = worker.tokenizer.decode([max_token])
+    print(decoded)
+
+
 
 def serve():
     rank = int(os.environ.get("RANK", 0))

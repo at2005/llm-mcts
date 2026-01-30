@@ -6,7 +6,6 @@ edition = "2024"
 [dependencies]
 dashmap = "6"
 anyhow = "1.0.100"
-tch = "0.22.0"
 tonic = "0.14.2"
 tonic-prost = "0.14.2"
 prost = "0.14.3"
