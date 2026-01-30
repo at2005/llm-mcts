@@ -12,6 +12,7 @@ dependencies = [
   "torch>=2.8.0",
   "transformers>=4.57.1",
   "pyzmq>=25",
+  "datasets>=2.14.4",
 ]
 
 [dependency-groups]

@@ -4,6 +4,7 @@ package inference;
 service Inference {
     rpc infer(InferenceRequest) returns (InferenceResponse);
     rpc grader(GraderRequest) returns (GraderResponse);
+    rpc get_prompt(Empty) returns (GetPromptResponse);
 }
 
 message InferenceRequest {
@@ -23,4 +24,9 @@ message GraderRequest {
 
 message GraderResponse {
     float reward = 1;
+}
+
+message GetPromptResponse {
+    uint32 prompt_id = 1;
+    repeated uint64 problem = 2;
 }

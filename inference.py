@@ -20,13 +20,13 @@ import torch.nn.functional as F
 import gc
 from redis import Redis
 import json
-
+from data import maths_dataloader
 from train import value_path, policy_path
 
 topk = 4
 hidden_size = 4096
 vocab_size = 128256
-    
+
 class BatchInferenceService:
     def __init__(self, rank: int):
         self.value_head = ValueHead(hidden_size).to(f"cuda:{rank}").eval()
@@ -151,6 +151,8 @@ class InferenceServicer(inference_pb2_grpc.InferenceServicer):
     def __init__(self, batch_inference_service: BatchInferenceService):
         self.batch_inference_service = batch_inference_service
         self.graders = Graders()
+        self.maths_dataloader = maths_dataloader()
+        self.r = Redis(host="localhost", port=6379, db=0)
 
     def infer(self, request : InferenceRequest, context):
         fut = Future()
@@ -166,6 +168,12 @@ class InferenceServicer(inference_pb2_grpc.InferenceServicer):
         # parse answer in <answer>...</answer>
         reward = self.graders.maths_grader(string_state, prompt_id)
         return inference_pb2.GraderResponse(reward=reward)
+    
+    def get_prompt(self):
+        idx, problem, answer = next(self.maths_dataloader)
+        self.r.set(f"correct_answer:{idx}", answer)
+        tokenized_ids = self.batch_inference_service.tokenizer.encode(problem)
+        return inference.pb2.GetPromptResponse(prompt_id=idx, problem=tokenized_ids)
 
 
 def test(rank: int):
