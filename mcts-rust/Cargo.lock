@@ -654,6 +654,7 @@ dependencies = [
  "dashmap",
  "futures",
  "prost",
+ "prost-types",
  "rand",
  "redis",
  "serde",

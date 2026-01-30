@@ -1,10 +1,11 @@
 syntax = "proto3";
 package inference;
 
+
 service Inference {
     rpc infer(InferenceRequest) returns (InferenceResponse);
     rpc grader(GraderRequest) returns (GraderResponse);
-    rpc get_prompt(Empty) returns (GetPromptResponse);
+    rpc get_prompt(GetPromptRequest) returns (GetPromptResponse);
 }
 
 message InferenceRequest {
@@ -24,6 +25,10 @@ message GraderRequest {
 
 message GraderResponse {
     float reward = 1;
+}
+
+message GetPromptRequest {
+    uint32 worker_pool_id = 1;
 }
 
 message GetPromptResponse {

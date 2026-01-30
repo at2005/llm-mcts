@@ -15,6 +15,7 @@ const EOS_ACTION: u32 = 100;
 const MAX_NODES: usize = 1000000;
 pub const NO_CHILD: usize = usize::MAX;
 pub const EXPANDING_NODE: usize = usize::MAX - 1;
+pub const NUM_WORKERS: usize = 10;
 
 pub const REPLAY_BUFFER_KEY: &str = "replay_buffer";
 
@@ -446,4 +447,42 @@ pub async fn greedy_select(con: &mut ConnectionManager, tree: &Tree) -> Result<V
     }
 
     Ok(nodes)
+}
+
+pub async fn spawn_mcts_workers(worker_pool_id: u32, max_samples: usize) -> Result<()> {
+    /* This function is used to spawn a worker pool for a single prompt */
+    let mut iters = 0;
+    loop {
+        if iters > max_samples {
+            return Ok(());
+        }
+        let mut tree = Tree::new(0, 0).await?;
+        let state = tree
+            .inference_client_pool
+            .send_get_prompt_request(worker_pool_id)
+            .await?
+            .into_inner();
+        let prompt_id = state.prompt_id;
+        let problem = state.problem;
+
+        tree.prompt_id = prompt_id;
+
+        let root_node = Node::new(None, None, problem.into());
+        tree.node_alloc(root_node);
+        let tree = Arc::new(tree);
+
+        let handles: Vec<_> = (0..10)
+            .map(|_| {
+                let tree = Arc::clone(&tree);
+                tokio::spawn(async move { mcts(&tree).await })
+            })
+            .collect();
+
+        futures::future::join_all(handles).await;
+
+        let client = redis::Client::open(get_redis_url().as_str())?;
+        let mut con = client.get_connection_manager().await?;
+        greedy_select(&mut con, &tree).await?;
+        iters += 1;
+    }
 }

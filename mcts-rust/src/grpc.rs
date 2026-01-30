@@ -5,7 +5,10 @@ use tonic::{Request, Response, transport::Channel};
 
 pub use crate::inference;
 use inference::inference_client::InferenceClient;
-use inference::{GraderRequest, GraderResponse, InferenceRequest, InferenceResponse};
+use inference::{
+    GetPromptRequest, GetPromptResponse, GraderRequest, GraderResponse, InferenceRequest,
+    InferenceResponse,
+};
 use rand::seq::IteratorRandom;
 
 pub struct InferenceClientPool {
@@ -34,17 +37,33 @@ impl InferenceClientPool {
         Ok(client)
     }
 
-    pub async fn send_request(
-        &self,
-        request: Request<InferenceRequest>,
-    ) -> Result<Response<InferenceResponse>> {
+    pub async fn get_random_client(&self) -> Result<InferenceClient<Channel>> {
         let random_port = self.clients.keys().choose(&mut rand::rng()).unwrap();
-        let mut mutable_client = self
+        let client = self
             .clients
             .get(random_port)
             .expect("client not found")
             .clone();
-        let response = mutable_client.infer(request).await?;
+        Ok(client)
+    }
+
+    pub async fn send_request(
+        &self,
+        request: Request<InferenceRequest>,
+    ) -> Result<Response<InferenceResponse>> {
+        let mut client = self.get_random_client().await?;
+        let response = client.infer(request).await?;
+        Ok(response)
+    }
+
+    pub async fn send_get_prompt_request(
+        &self,
+        worker_pool_id: u32,
+    ) -> Result<Response<GetPromptResponse>> {
+        let mut client = self.get_random_client().await?;
+        let response = client
+            .get_prompt(GetPromptRequest { worker_pool_id })
+            .await?;
         Ok(response)
     }
 
@@ -59,16 +78,8 @@ impl InferenceClientPool {
             prompt_id,
             state,
         };
-
-        let random_port = self.clients.keys().choose(&mut rand::rng()).unwrap();
-
-        let mut mutable_client = self
-            .clients
-            .get(random_port)
-            .expect("client not found")
-            .clone();
-
-        let response = mutable_client.grader(grader_request).await?;
+        let mut client = self.get_random_client().await?;
+        let response = client.grader(grader_request).await?;
         Ok(response)
     }
 
