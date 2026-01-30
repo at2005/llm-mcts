@@ -152,7 +152,6 @@ class InferenceServicer(inference_pb2_grpc.InferenceServicer):
         self.batch_inference_service = batch_inference_service
         self.graders = Graders()
         self.maths_dataloader = maths_dataloader()
-        self.r = Redis(host="localhost", port=6379, db=0)
 
     def infer(self, request : InferenceRequest, context):
         fut = Future()
@@ -171,9 +170,8 @@ class InferenceServicer(inference_pb2_grpc.InferenceServicer):
     
     def get_prompt(self):
         idx, problem, answer = next(self.maths_dataloader)
-        self.r.set(f"correct_answer:{idx}", answer)
         tokenized_ids = self.batch_inference_service.tokenizer.encode(problem)
-        return inference.pb2.GetPromptResponse(prompt_id=idx, problem=tokenized_ids)
+        return inference_pb2.GetPromptResponse(prompt_id=idx, problem=tokenized_ids)
 
 
 def test(rank: int):
