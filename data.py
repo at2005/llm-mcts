@@ -2,6 +2,12 @@ from datasets import load_dataset
 from torch.utils.data import DataLoader, Dataset
 from redis import Redis
 
+system_prompt = """
+You are a helpful assistant that can answer questions about mathematics. For every question, output your thinking process in <think></think> and the final answer in <answer></answer>.
+"""
+
+system_prompt_message = {"role": "system", "content": system_prompt}
+
 class MathsDataset(Dataset):
     def __init__(self, ds):
         self.ds = ds

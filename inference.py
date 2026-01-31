@@ -20,7 +20,7 @@ import torch.nn.functional as F
 import gc
 from redis import Redis
 import json
-from data import maths_dataloader
+from data import maths_dataloader, system_prompt_message
 from train import value_path, policy_path
 
 topk = 4
@@ -29,11 +29,15 @@ vocab_size = 128256
 
 class BatchInferenceService:
     def __init__(self, rank: int):
-        self.value_head = ValueHead(hidden_size).to(f"cuda:{rank}").eval()
+        # Restrict this process to only see its assigned GPU
+        os.environ["CUDA_VISIBLE_DEVICES"] = str(rank)
+
+        # After setting CUDA_VISIBLE_DEVICES, cuda:0 refers to the assigned GPU
+        self.value_head = ValueHead(hidden_size).to("cuda:0").eval()
         self.weights_lock = threading.Lock()
         self.tokenizer = AutoTokenizer.from_pretrained(model_name)
         self.llm = sgl.Engine(model_path=model_name, enable_return_hidden_states=True)
-        self.lm_head = nn.Linear(hidden_size, vocab_size, bias=False).to(dtype=torch.bfloat16, device=f"cuda:{rank}")
+        self.lm_head = nn.Linear(hidden_size, vocab_size, bias=False).to(dtype=torch.bfloat16, device="cuda:0")
 
         # run every 8 requests
         self.batch_size = 8
@@ -45,7 +49,7 @@ class BatchInferenceService:
         self.load_lm_head()
 
     def load_lm_head(self):
-        model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.bfloat16).to(f"cuda:{self.rank}")
+        model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.bfloat16).to("cuda:0")
         lm_head_weight = model.lm_head.weight.detach().clone()
         self.lm_head.weight.data.copy_(lm_head_weight)
         del model
@@ -55,7 +59,7 @@ class BatchInferenceService:
     def sync_weights(self):
         if os.path.exists(value_path) and os.path.exists(policy_path):
             with self.weights_lock:
-                state_dict = torch.load(value_path, map_location=f"cuda:{self.rank}", weights_only=True)
+                state_dict = torch.load(value_path, map_location="cuda:0", weights_only=True)
                 self.value_head.load_state_dict(state_dict)
                 self.llm.update_weights_from_disk(policy_path)
             print(f"Rank {self.rank}: Loaded new weights")
@@ -170,7 +174,9 @@ class InferenceServicer(inference_pb2_grpc.InferenceServicer):
     
     def get_prompt(self):
         idx, problem, answer = next(self.maths_dataloader)
-        tokenized_ids = self.batch_inference_service.tokenizer.encode(problem)
+        message = [system_prompt_message, {"role": "user", "content": problem}]
+        chat_template = self.batch_inference_service.tokenizer.apply_chat_template(message, tokenize=False, add_generation_prompt=True)
+        tokenized_ids = self.batch_inference_service.tokenizer.encode(chat_template)
         return inference_pb2.GetPromptResponse(prompt_id=idx, problem=tokenized_ids)
 
 
