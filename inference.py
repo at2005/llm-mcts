@@ -1,8 +1,13 @@
+import os
+# Must set CUDA_VISIBLE_DEVICES before any CUDA imports
+_rank = int(os.environ.get("RANK", 0))
+os.environ["CUDA_VISIBLE_DEVICES"] = str(_rank)
+
 import grpc
 from concurrent import futures
 import inference_pb2_grpc
 import inference_pb2
-from inference_pb2 import InferenceRequest, GraderRequest
+from inference_pb2 import InferenceRequest, GraderRequest, GetPromptRequest
 import torch
 import threading
 import sglang as sgl
@@ -12,7 +17,6 @@ from concurrent.futures import Future
 from graders import Graders
 import time
 import queue
-import os
 import re
 import numpy as np
 import torch.nn as nn
@@ -29,14 +33,13 @@ vocab_size = 128256
 
 class BatchInferenceService:
     def __init__(self, rank: int):
-        # Restrict this process to only see its assigned GPU
-        os.environ["CUDA_VISIBLE_DEVICES"] = str(rank)
-
-        # After setting CUDA_VISIBLE_DEVICES, cuda:0 refers to the assigned GPU
+        # CUDA_VISIBLE_DEVICES is set at module load time, so cuda:0 refers to the assigned GPU
         self.value_head = ValueHead(hidden_size).to("cuda:0").eval()
         self.weights_lock = threading.Lock()
         self.tokenizer = AutoTokenizer.from_pretrained(model_name)
-        self.llm = sgl.Engine(model_path=model_name, enable_return_hidden_states=True)
+        # Each rank needs its own sglang port to avoid conflicts
+        sglang_port = 30000 + rank
+        self.llm = sgl.Engine(model_path=model_name, enable_return_hidden_states=True, port=sglang_port)
         self.lm_head = nn.Linear(hidden_size, vocab_size, bias=False).to(dtype=torch.bfloat16, device="cuda:0")
 
         # run every 8 requests
@@ -156,6 +159,7 @@ class InferenceServicer(inference_pb2_grpc.InferenceServicer):
         self.batch_inference_service = batch_inference_service
         self.graders = Graders()
         self.maths_dataloader = maths_dataloader()
+        self.maths_dataloader_iter = iter(self.maths_dataloader)
 
     def infer(self, request : InferenceRequest, context):
         fut = Future()
@@ -172,8 +176,12 @@ class InferenceServicer(inference_pb2_grpc.InferenceServicer):
         reward = self.graders.maths_grader(string_state, prompt_id)
         return inference_pb2.GraderResponse(reward=reward)
     
-    def get_prompt(self):
-        idx, problem, answer = next(self.maths_dataloader)
+    def get_prompt(self, request : GetPromptRequest, context):
+        try:
+            idx, problem, answer = next(self.maths_dataloader_iter)
+        except StopIteration:
+            self.maths_dataloader_iter = iter(self.maths_dataloader)
+            idx, problem, answer = next(self.maths_dataloader_iter)
         message = [system_prompt_message, {"role": "user", "content": problem}]
         chat_template = self.batch_inference_service.tokenizer.apply_chat_template(message, tokenize=False, add_generation_prompt=True)
         tokenized_ids = self.batch_inference_service.tokenizer.encode(chat_template)
@@ -199,6 +207,7 @@ def test(rank: int):
 def serve():
     rank = int(os.environ.get("RANK", 0))
     port = int(os.environ.get("PORT", 50051 + rank))
+    print(f"Rank {rank}: Starting server on port {port}")
 
     worker = BatchInferenceService(rank)
     threading.Thread(target=worker.batch_worker, daemon=True).start()

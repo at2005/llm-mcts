@@ -3,6 +3,7 @@ use redis::{AsyncCommands, aio::ConnectionManager};
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 use std::sync::{Arc, OnceLock};
+use tracing::{error, info};
 
 type NodeId = usize;
 use crate::grpc::InferenceClientPool;
@@ -451,6 +452,7 @@ pub async fn greedy_select(con: &mut ConnectionManager, tree: &Tree) -> Result<V
 
 pub async fn spawn_mcts_workers(worker_pool_id: u32, max_samples: usize) -> Result<()> {
     /* This function is used to spawn a worker pool for a single prompt */
+    let num_parallel_workers = 10;
     let mut iters = 0;
     loop {
         if iters > max_samples {
@@ -466,19 +468,28 @@ pub async fn spawn_mcts_workers(worker_pool_id: u32, max_samples: usize) -> Resu
         let problem = state.problem;
 
         tree.prompt_id = prompt_id;
+        info!("Spawning mcts worker pool for prompt id: {}", prompt_id);
+        info!("Problem: {:?}", problem);
 
         let root_node = Node::new(None, None, problem.into());
         tree.node_alloc(root_node);
         let tree = Arc::new(tree);
 
-        let handles: Vec<_> = (0..10)
+        let handles: Vec<_> = (0..num_parallel_workers)
             .map(|_| {
                 let tree = Arc::clone(&tree);
                 tokio::spawn(async move { mcts(&tree).await })
             })
             .collect();
 
-        futures::future::join_all(handles).await;
+        let results = futures::future::join_all(handles).await;
+        for (i, result) in results.iter().enumerate() {
+            match result {
+                Ok(Ok(())) => info!("Worker {} completed successfully", i),
+                Ok(Err(e)) => error!("Worker {} returned error: {:?}", i, e),
+                Err(e) => error!("Worker {} panicked: {:?}", i, e),
+            }
+        }
 
         let client = redis::Client::open(get_redis_url().as_str())?;
         let mut con = client.get_connection_manager().await?;

@@ -27,9 +27,13 @@ wait_for_port() {
 redis-server --daemonize yes --port 6379 --bind 0.0.0.0
 wait_for_port 6379
 
-# run inference
-uv run torchrun --nproc_per_node=$NUM_INFERENCE_GPUS inference.py &
-INFERENCE_PID=$!
+# run inference servers (one per GPU, no torchrun)
+INFERENCE_PIDS=()
+for i in $(seq 0 $((NUM_INFERENCE_GPUS - 1))); do
+    echo "Starting inference server for rank $i..."
+    RANK=$i uv run python inference.py &
+    INFERENCE_PIDS+=($!)
+done
 
 # wait for all inference servers to be ready
 for i in $(seq 0 $((NUM_INFERENCE_GPUS - 1))); do
@@ -37,12 +41,15 @@ for i in $(seq 0 $((NUM_INFERENCE_GPUS - 1))); do
 done
 echo "All inference servers ready"
 
-cd mcts-rust && cargo run --release &
+echo "Starting mcts-rust..."
+(cd mcts-rust && cargo run --release) &
 MCTS_PID=$!
-cd -
+echo "mcts-rust started with PID $MCTS_PID"
 
+echo "Starting training..."
 uv run torchrun --nproc_per_node=$NUM_TRAINING_GPUS train.py &
 TRAIN_PID=$!
+echo "Training started with PID $TRAIN_PID"
 
 # wait for all background processes
-wait $INFERENCE_PID $MCTS_PID $TRAIN_PID
+wait "${INFERENCE_PIDS[@]}" $MCTS_PID $TRAIN_PID

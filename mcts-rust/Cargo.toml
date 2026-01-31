@@ -16,7 +16,8 @@ redis = { version = "1.0.2", features = ["tokio-comp", "connection-manager"] }
 serde_json = "1.0.149"
 serde = {version = "1.0.228", features = ["derive"]}
 prost-types = "0.14.3"
-
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.22", features = ["env-filter"] }
 
 [build-dependencies]
 tonic-prost-build = "0.14.2"

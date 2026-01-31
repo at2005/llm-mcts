@@ -44,6 +44,11 @@ class InferenceStub(object):
                 request_serializer=inference__pb2.GraderRequest.SerializeToString,
                 response_deserializer=inference__pb2.GraderResponse.FromString,
                 _registered_method=True)
+        self.get_prompt = channel.unary_unary(
+                '/inference.Inference/get_prompt',
+                request_serializer=inference__pb2.GetPromptRequest.SerializeToString,
+                response_deserializer=inference__pb2.GetPromptResponse.FromString,
+                _registered_method=True)
 
 
 class InferenceServicer(object):
@@ -61,6 +66,12 @@ class InferenceServicer(object):
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def get_prompt(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
 
 def add_InferenceServicer_to_server(servicer, server):
     rpc_method_handlers = {
@@ -73,6 +84,11 @@ def add_InferenceServicer_to_server(servicer, server):
                     servicer.grader,
                     request_deserializer=inference__pb2.GraderRequest.FromString,
                     response_serializer=inference__pb2.GraderResponse.SerializeToString,
+            ),
+            'get_prompt': grpc.unary_unary_rpc_method_handler(
+                    servicer.get_prompt,
+                    request_deserializer=inference__pb2.GetPromptRequest.FromString,
+                    response_serializer=inference__pb2.GetPromptResponse.SerializeToString,
             ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
@@ -129,6 +145,33 @@ class Inference(object):
             '/inference.Inference/grader',
             inference__pb2.GraderRequest.SerializeToString,
             inference__pb2.GraderResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def get_prompt(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/inference.Inference/get_prompt',
+            inference__pb2.GetPromptRequest.SerializeToString,
+            inference__pb2.GetPromptResponse.FromString,
             options,
             channel_credentials,
             insecure,

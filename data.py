@@ -25,6 +25,8 @@ class MathsDataset(Dataset):
         return idx, problem, answer
 
 def maths_dataloader():
+    print("Loading dataset...")
     ds = MathsDataset(load_dataset("POLARIS-Project/Polaris-Dataset-53K", split="train"))
+    print("Dataset loaded")
     dataloader = DataLoader(ds, batch_size=128, shuffle=True, num_workers=4)
     return dataloader
