@@ -24,12 +24,16 @@ import torch.nn.functional as F
 import gc
 from redis import Redis
 import json
-from data import maths_dataloader, system_prompt_message
+from data import MathsDataset, system_prompt_message
+from datasets import load_dataset
 from train import value_path, policy_path
 
 topk = 4
 hidden_size = 4096
 vocab_size = 128256
+
+branch_token = "HIGH"
+branch_token_id = 91319
 
 class BatchInferenceService:
     def __init__(self, rank: int):
@@ -158,8 +162,7 @@ class InferenceServicer(inference_pb2_grpc.InferenceServicer):
     def __init__(self, batch_inference_service: BatchInferenceService):
         self.batch_inference_service = batch_inference_service
         self.graders = Graders()
-        self.maths_dataloader = maths_dataloader()
-        self.maths_dataloader_iter = iter(self.maths_dataloader)
+        self.maths_dataset = MathsDataset(load_dataset("POLARIS-Project/Polaris-Dataset-53K", split="train"))
 
     def infer(self, request : InferenceRequest, context):
         fut = Future()
@@ -177,14 +180,11 @@ class InferenceServicer(inference_pb2_grpc.InferenceServicer):
         return inference_pb2.GraderResponse(reward=reward)
     
     def get_prompt(self, request : GetPromptRequest, context):
-        try:
-            idx, problem, answer = next(self.maths_dataloader_iter)
-        except StopIteration:
-            self.maths_dataloader_iter = iter(self.maths_dataloader)
-            idx, problem, answer = next(self.maths_dataloader_iter)
+        idx, problem, answer = next(self.maths_dataset)
         message = [system_prompt_message, {"role": "user", "content": problem}]
-        chat_template = self.batch_inference_service.tokenizer.apply_chat_template(message, tokenize=False, add_generation_prompt=True)
+        chat_template = self.batch_inference_service.tokenizer.apply_chat_template(message, tokenize=False, add_generation_prompt=True,)
         tokenized_ids = self.batch_inference_service.tokenizer.encode(chat_template)
+        print(tokenized_ids)
         return inference_pb2.GetPromptResponse(prompt_id=idx, problem=tokenized_ids)
 
 
@@ -201,7 +201,6 @@ def test(rank: int):
     print(f"Rank {rank}: {max_token}")
     decoded = worker.tokenizer.decode([max_token])
     print(f"Rank {rank}: {decoded}")
-
 
 
 def serve():
