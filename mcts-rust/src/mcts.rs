@@ -16,7 +16,7 @@ const EOS_ACTION: u32 = 100;
 const MAX_NODES: usize = 1000000;
 pub const NO_CHILD: usize = usize::MAX;
 pub const EXPANDING_NODE: usize = usize::MAX - 1;
-pub const NUM_WORKERS: usize = 10;
+pub const NUM_WORKERS: usize = 2;
 
 pub const REPLAY_BUFFER_KEY: &str = "replay_buffer";
 

@@ -10,5 +10,8 @@ class Graders:
         correct_answer = self.redis.get(f"correct_answer:{prompt_id}")
         if correct_answer is None:
             raise ValueError(f"Correct answer not found for prompt {prompt_id}")
-        correct_answer = float(correct_answer)
-        return abs(answer - correct_answer)
+        
+        if answer == correct_answer:
+            return 1.0
+        else:
+            return 0.0

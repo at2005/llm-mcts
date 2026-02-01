@@ -4,7 +4,7 @@ from redis import Redis
 
 
 system_prompt = """
-You are a helpful assistant that can answer questions about mathematics. For every question, output your thinking process in <think></think> and the final answer in <answer></answer>.
+You are a helpful assistant that can answer questions about mathematics. For every question, output your thinking process in <think></think> and the final answer in <answer></answer>. If you are uncertain about or wish to spend more compute on a particular direction, output "HIGH" and then continue your reasoning.
 """
 
 system_prompt_message = {"role": "system", "content": system_prompt}

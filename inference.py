@@ -28,7 +28,7 @@ from data import MathsDataset, system_prompt_message
 from datasets import load_dataset
 from train import value_path, policy_path
 
-topk = 4
+topk = 2
 hidden_size = 4096
 vocab_size = 128256
 
@@ -47,13 +47,14 @@ class BatchInferenceService:
         self.lm_head = nn.Linear(hidden_size, vocab_size, bias=False).to(dtype=torch.bfloat16, device="cuda:0")
 
         # run every 8 requests
-        self.batch_size = 8
+        self.batch_size = 4
         self.rank = rank
-        self.max_wait_ms = 240000
+        self.max_wait_ms = 10 * 1000 
 
         self.per_gpu_queue = queue.Queue()
     
         self.load_lm_head()
+        self.stop_token_id = self.tokenizer.encode("HIGH")[0]
 
     def load_lm_head(self):
         model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.bfloat16).to("cuda:0")
@@ -90,21 +91,27 @@ class BatchInferenceService:
 
     @torch.inference_mode()
     def run_batch(self, input_ids, topk):
+        input_batch_text = [self.tokenizer.decode(input_id) for input_id in input_ids]
+        print(f"Rank {self.rank}: Running batch with input_text: {input_batch_text}")
         sampling_params = {
             "temperature": 0.0,
-            "max_new_tokens": 1,
+            "max_new_tokens": 100,
+            "stop_token_ids": [self.stop_token_id],
         }
 
         with self.weights_lock:
-            outputs = self.llm.generate(input_ids=input_ids, sampling_params=sampling_params, return_hidden_states=True, return_logprob=True, top_logprobs_num=topk)
+            outputs = [self.llm.generate(input_ids=[ids], sampling_params=sampling_params, return_hidden_states=True, return_logprob=True, top_logprobs_num=topk)[0] for ids in input_ids]
+
             policies = []
             last_hidden_states = []
             values = []
 
-            for output in outputs:
+            for i, output in enumerate(outputs):
                 meta_info = output["meta_info"]
-                prefill_store = meta_info["hidden_states"][0]
+                prefill_store = meta_info["hidden_states"][-1]
                 if len(prefill_store) == 0:
+                    print(output)
+                    print(self.tokenizer.decode(input_ids[i]))
                     raise ValueError("Prefill store is empty")
 
                 last_hidden_state = torch.tensor(prefill_store[-1], dtype=torch.bfloat16).cuda() # [hidden_size]
@@ -136,8 +143,10 @@ class BatchInferenceService:
             deadline = time.monotonic() + (self.max_wait_ms / 1000.0)
 
             while len(batch) < self.batch_size:
+                print(f"Rank {self.rank}: Waiting for batch with length {len(batch)}")
                 timeout = deadline - time.monotonic()
                 if timeout <= 0:
+                    print(f"Rank {self.rank}: Timeout waiting for batch")
                     break
 
                 try:
@@ -150,6 +159,7 @@ class BatchInferenceService:
             futures = [item[1] for item in batch]
 
             try:
+                print(f"Rank {self.rank}: Running batch with length {len(batch_input_ids)}")
                 policy, value = self.run_batch(batch_input_ids, topk)
                 for fut, pol, val in zip(futures, policy, value):
                     fut.set_result((pol, val))
@@ -169,7 +179,7 @@ class InferenceServicer(inference_pb2_grpc.InferenceServicer):
         state = list(request.state)
         self.batch_inference_service.per_gpu_queue.put((state, fut))
         policies, values = fut.result(timeout=3 * self.batch_inference_service.max_wait_ms / 1000.0)
-        return inference_pb2.InferenceResponse(policy=policies, value=values)
+        return inference_pb2.InferenceResponse(prior=policies, value=values)
     
     def grader(self, request : GraderRequest, context):
         state = request.state
@@ -184,7 +194,6 @@ class InferenceServicer(inference_pb2_grpc.InferenceServicer):
         message = [system_prompt_message, {"role": "user", "content": problem}]
         chat_template = self.batch_inference_service.tokenizer.apply_chat_template(message, tokenize=False, add_generation_prompt=True,)
         tokenized_ids = self.batch_inference_service.tokenizer.encode(chat_template)
-        print(tokenized_ids)
         return inference_pb2.GetPromptResponse(prompt_id=idx, problem=tokenized_ids)
 
 
@@ -212,7 +221,7 @@ def serve():
     threading.Thread(target=worker.batch_worker, daemon=True).start()
     threading.Thread(target=worker.weight_subscriber, daemon=True).start()
 
-    server = grpc.server(futures.ThreadPoolExecutor(max_workers=1))
+    server = grpc.server(futures.ThreadPoolExecutor(max_workers=16))
     inference_pb2_grpc.add_InferenceServicer_to_server(InferenceServicer(worker), server)
     server.add_insecure_port(f'[::]:{port}')
     server.start()

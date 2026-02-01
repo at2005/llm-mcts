@@ -6,7 +6,7 @@ use tracing::{error, info};
 async fn main() -> Result<()> {
     tracing_subscriber::fmt::init();
     let num_workers = std::env::var("BATCH_WORKER_SIZE")
-        .unwrap_or("100".to_string())
+        .unwrap_or("1".to_string())
         .parse::<usize>()
         .unwrap();
 
