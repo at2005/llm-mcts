@@ -8,11 +8,8 @@ use tracing::{error, info};
 type NodeId = usize;
 use crate::grpc::InferenceClientPool;
 
+use crate::config::ExperimentConfig;
 pub const ROOT_NODE_ID: NodeId = 0;
-const C_PUCT: f32 = 1.0;
-const VIRTUAL_LOSS: u32 = 1;
-const MAX_ITERATIONS: usize = 1000;
-const EOS_ACTION: u32 = 100;
 const MAX_NODES: usize = 1000000;
 pub const NO_CHILD: usize = usize::MAX;
 pub const EXPANDING_NODE: usize = usize::MAX - 1;
@@ -152,10 +149,11 @@ pub struct Tree {
     pub size: AtomicUsize,
     pub episode_id: u32,
     pub prompt_id: u32,
+    pub config: ExperimentConfig,
 }
 
 impl Tree {
-    pub async fn new(episode_id: u32, prompt_id: u32) -> Result<Self> {
+    pub async fn new(episode_id: u32, prompt_id: u32, config: ExperimentConfig) -> Result<Self> {
         let inference_client_pool = InferenceClientPool::new(get_num_inference_gpus()).await?;
         let mut nodes = Vec::with_capacity(MAX_NODES);
         nodes.resize_with(MAX_NODES, OnceLock::new);
@@ -166,6 +164,7 @@ impl Tree {
             size: AtomicUsize::new(0),
             episode_id,
             prompt_id,
+            config,
         })
     }
 
@@ -180,18 +179,18 @@ impl Tree {
     }
 }
 
-pub fn puct(visits: u32, value: f32, child_visits: u32, prior: f32) -> f32 {
-    let q = match child_visits {
-        0 => 0.0,
-        _ => value / child_visits as f32,
-    };
-
-    let exploration_term = (visits as f32).sqrt() / (1.0 + child_visits as f32);
-    let puct_term = q + C_PUCT * exploration_term * prior;
-    puct_term
-}
-
 impl Tree {
+    pub fn puct(&self, visits: u32, value: f32, child_visits: u32, prior: f32) -> f32 {
+        let q = match child_visits {
+            0 => 0.0,
+            _ => value / child_visits as f32,
+        };
+
+        let exploration_term = (visits as f32).sqrt() / (1.0 + child_visits as f32);
+        let puct_term = q + self.config.c_puct * exploration_term * prior;
+        puct_term
+    }
+
     pub fn select(
         &self,
         node: &Node,
@@ -241,8 +240,8 @@ impl Tree {
                     _ => self.get_node(b_child_id).visits.load(Ordering::Relaxed),
                 };
 
-                let a_puct = puct(node_visits, a_value, a_child_visits, a.prior);
-                let b_puct = puct(node_visits, b_value, b_child_visits, b.prior);
+                let a_puct = self.puct(node_visits, a_value, a_child_visits, a.prior);
+                let b_puct = self.puct(node_visits, b_value, b_child_visits, b.prior);
                 a_puct.partial_cmp(&b_puct).expect("NaN")
             })
             .expect("Failed to find best action")
@@ -259,7 +258,7 @@ impl Tree {
 
         node_obj
             .visits
-            .fetch_add(1 - VIRTUAL_LOSS, Ordering::Relaxed);
+            .fetch_add(1 - self.config.virtual_loss, Ordering::Relaxed);
 
         if let Some(parent) = node_obj.parent {
             self.backprop(parent, reward)?;
@@ -333,7 +332,7 @@ pub async fn mcts(tree: &Tree) -> Result<()> {
     let mut iterations = 0;
     let mut eos_encountered = false;
 
-    while iterations < MAX_ITERATIONS {
+    while iterations < tree.config.max_mcts_iterations {
         let mut node = 0;
 
         // select next action
@@ -342,12 +341,14 @@ pub async fn mcts(tree: &Tree) -> Result<()> {
             let expansion = node_obj.ensure_expansion(tree).await?;
 
             // add virtual loss to node to discourage it from being selected again, for parallel mcts
-            node_obj.visits.fetch_add(VIRTUAL_LOSS, Ordering::Relaxed);
+            node_obj
+                .visits
+                .fetch_add(tree.config.virtual_loss, Ordering::Relaxed);
 
             let edge_idx = tree.select(node_obj, &expansion, false)?;
             let edge = &expansion.edges[edge_idx];
 
-            if edge.action == EOS_ACTION {
+            if edge.action == tree.config.eos_token_id {
                 eos_encountered = true;
                 break;
             }
@@ -358,7 +359,7 @@ pub async fn mcts(tree: &Tree) -> Result<()> {
                 node = tree.expand(node, edge).await?;
                 tree.get_node(node)
                     .visits
-                    .fetch_add(VIRTUAL_LOSS, Ordering::Relaxed);
+                    .fetch_add(tree.config.virtual_loss, Ordering::Relaxed);
                 break;
             }
 
@@ -415,7 +416,7 @@ pub async fn greedy_select(con: &mut ConnectionManager, tree: &Tree) -> Result<V
         let edge = &expansion.edges[edge_idx];
         node = edge.child_id.load(Ordering::Relaxed);
         nodes.push(node);
-        if edge.action == EOS_ACTION {
+        if edge.action == tree.config.eos_token_id {
             break;
         }
     }
@@ -450,7 +451,11 @@ pub async fn greedy_select(con: &mut ConnectionManager, tree: &Tree) -> Result<V
     Ok(nodes)
 }
 
-pub async fn spawn_mcts_workers(worker_pool_id: u32, max_samples: usize) -> Result<()> {
+pub async fn spawn_mcts_workers(
+    worker_pool_id: u32,
+    max_samples: usize,
+    config: ExperimentConfig,
+) -> Result<()> {
     /* This function is used to spawn a worker pool for a single prompt */
     let num_parallel_workers = 10;
     let mut iters = 0;
@@ -458,7 +463,7 @@ pub async fn spawn_mcts_workers(worker_pool_id: u32, max_samples: usize) -> Resu
         if iters > max_samples {
             return Ok(());
         }
-        let mut tree = Tree::new(0, 0).await?;
+        let mut tree = Tree::new(0, 0, config.clone()).await?;
         let state = tree
             .inference_client_pool
             .send_get_prompt_request(worker_pool_id)

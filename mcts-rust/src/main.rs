@@ -1,4 +1,5 @@
 use anyhow::Result;
+use mcts_rust::config::load_config;
 use mcts_rust::mcts::spawn_mcts_workers;
 use tracing::{error, info};
 
@@ -12,11 +13,15 @@ async fn main() -> Result<()> {
 
     info!("Starting {} MCTS worker pools", num_workers);
 
+    info!("Loading config");
+    let config = load_config()?;
+    info!("Config loaded");
+
     let handles = (0..num_workers)
         .map(|i| {
             let worker_pool_id = i as u32;
             info!("Spawning MCTS worker pool {}", worker_pool_id);
-            tokio::spawn(spawn_mcts_workers(worker_pool_id, 1000))
+            tokio::spawn(spawn_mcts_workers(worker_pool_id, 1000, config.clone()))
         })
         .collect::<Vec<_>>();
     let results = futures::future::join_all(handles).await;

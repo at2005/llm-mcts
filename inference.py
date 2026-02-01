@@ -28,15 +28,16 @@ from data import MathsDataset, system_prompt_message
 from datasets import load_dataset
 from train import value_path, policy_path
 
-topk = 2
+topk = 8
 hidden_size = 4096
 vocab_size = 128256
 
 branch_token = "HIGH"
 branch_token_id = 91319
 
+
 class BatchInferenceService:
-    def __init__(self, rank: int):
+    def __init__(self, rank: int, config: dict):
         # CUDA_VISIBLE_DEVICES is set at module load time, so cuda:0 refers to the assigned GPU
         self.value_head = ValueHead(hidden_size).to("cuda:0").eval()
         self.weights_lock = threading.Lock()
@@ -46,15 +47,15 @@ class BatchInferenceService:
         self.llm = sgl.Engine(model_path=model_name, enable_return_hidden_states=True, port=sglang_port)
         self.lm_head = nn.Linear(hidden_size, vocab_size, bias=False).to(dtype=torch.bfloat16, device="cuda:0")
 
-        # run every 8 requests
-        self.batch_size = 4
         self.rank = rank
-        self.max_wait_ms = 10 * 1000 
+        self.config = config
+        self.max_wait_ms = self.config["inference_max_wait_ms"]
+        self.batch_size = self.config["inference_batch_size"]
 
         self.per_gpu_queue = queue.Queue()
     
         self.load_lm_head()
-        self.stop_token_id = self.tokenizer.encode("HIGH")[0]
+        self.stop_token_id = self.config["branch_token_id"]
 
     def load_lm_head(self):
         model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.bfloat16).to("cuda:0")
@@ -73,7 +74,7 @@ class BatchInferenceService:
             print(f"Rank {self.rank}: Loaded new weights")
 
     def weight_subscriber(self):
-        redis = Redis(host="localhost", port=6379, db=0)
+        redis = Redis(host=self.config["redis_host"], port=self.config["redis_port"], db=self.config["redis_db"])
         pubsub = redis.pubsub()
         pubsub.subscribe("weights:updates")
 
@@ -95,11 +96,12 @@ class BatchInferenceService:
         print(f"Rank {self.rank}: Running batch with input_text: {input_batch_text}")
         sampling_params = {
             "temperature": 0.0,
-            "max_new_tokens": 100,
+            "max_new_tokens": self.config["max_new_tokens"],
             "stop_token_ids": [self.stop_token_id],
         }
 
         with self.weights_lock:
+            # this is terrible performance but sglang is buggy for returning batched hidden states!!
             outputs = [self.llm.generate(input_ids=[ids], sampling_params=sampling_params, return_hidden_states=True, return_logprob=True, top_logprobs_num=topk)[0] for ids in input_ids]
 
             policies = []
@@ -132,8 +134,6 @@ class BatchInferenceService:
         policies = [{int(i): np.exp(p) for i, p in zip(indices, probs)} for indices, probs in zip(top_indices, top_probs)]
 
         return policies, values
-
-
 
 
     def batch_worker(self):
@@ -213,11 +213,14 @@ def test(rank: int):
 
 
 def serve():
+    with open("configs/config.json", "r") as f:
+        config = json.load(f)
+
     rank = int(os.environ.get("RANK", 0))
-    port = int(os.environ.get("PORT", 50051 + rank))
+    port = int(os.environ.get("PORT", config["inference_base_port"] + rank))
     print(f"Rank {rank}: Starting server on port {port}")
 
-    worker = BatchInferenceService(rank)
+    worker = BatchInferenceService(rank, config)
     threading.Thread(target=worker.batch_worker, daemon=True).start()
     threading.Thread(target=worker.weight_subscriber, daemon=True).start()
 
