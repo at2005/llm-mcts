@@ -83,7 +83,7 @@ impl InferenceClientPool {
         Ok(response)
     }
 
-    pub async fn policy_value_head(&self, state: &[u64]) -> Result<(BTreeMap<u32, f32>, f32)> {
+    pub async fn policy_value_head(&self, state: &[u64]) -> Result<(BTreeMap<u64, f32>, f32)> {
         let mut request = Request::new(InferenceRequest {
             state: state.to_vec(),
         });

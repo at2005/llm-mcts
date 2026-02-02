@@ -23,9 +23,9 @@ pub struct ExperimentConfig {
     pub max_mcts_iterations: u32,
     pub c_puct: f32,
     pub virtual_loss: u32,
-    pub eos_token_id: u32,
+    pub eos_token_id: u64,
     pub branch_token: String,
-    pub branch_token_id: u32,
+    pub branch_token_id: u64,
 }
 
 pub fn load_config() -> Result<ExperimentConfig> {

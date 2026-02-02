@@ -17,26 +17,11 @@ pub const NUM_WORKERS: usize = 2;
 
 pub const REPLAY_BUFFER_KEY: &str = "replay_buffer";
 
-pub fn get_num_inference_gpus() -> usize {
-    std::env::var("NUM_INFERENCE_GPUS")
-        .unwrap_or("4".to_string())
-        .parse()
-        .unwrap()
-}
-
-pub fn get_redis_url() -> String {
-    format!(
-        "redis://{}:{}",
-        std::env::var("REDIS_HOST").unwrap_or("127.0.0.1".to_string()),
-        std::env::var("REDIS_PORT").unwrap_or("6379".to_string())
-    )
-}
-
 #[derive(Serialize, Deserialize)]
 pub struct ReplayBufferEntry {
     pub state: Vec<u64>,
-    pub action: u32,
-    pub priors: Vec<(u32, f32)>,
+    pub action: u64,
+    pub priors: Vec<(u64, f32)>,
     pub reward: f32,
 }
 
@@ -79,11 +64,11 @@ impl AtomicF32 {
 pub struct Edge {
     pub child_id: AtomicUsize,
     pub prior: f32,
-    pub action: u32,
+    pub action: u64,
 }
 
 impl Edge {
-    pub fn new(prior: f32, action: u32) -> Self {
+    pub fn new(prior: f32, action: u64) -> Self {
         Self {
             child_id: AtomicUsize::new(NO_CHILD),
             prior,
@@ -102,14 +87,14 @@ pub struct Expansion {
 pub struct Node {
     pub visits: AtomicU32,
     pub parent: Option<NodeId>,
-    pub action: Option<u32>,
+    pub action: Option<u64>,
     pub accumulated_value: Arc<AtomicF32>,
     pub state: Arc<[u64]>,
     pub expansion: tokio::sync::OnceCell<Expansion>,
 }
 
 impl Node {
-    pub fn new(parent: Option<NodeId>, action: Option<u32>, state: Arc<[u64]>) -> Self {
+    pub fn new(parent: Option<NodeId>, action: Option<u64>, state: Arc<[u64]>) -> Self {
         Self {
             visits: AtomicU32::new(0),
             parent,
@@ -154,7 +139,8 @@ pub struct Tree {
 
 impl Tree {
     pub async fn new(episode_id: u32, prompt_id: u32, config: ExperimentConfig) -> Result<Self> {
-        let inference_client_pool = InferenceClientPool::new(get_num_inference_gpus()).await?;
+        let inference_client_pool =
+            InferenceClientPool::new(config.num_inference_gpus as usize).await?;
         let mut nodes = Vec::with_capacity(MAX_NODES);
         nodes.resize_with(MAX_NODES, OnceLock::new);
 
@@ -496,7 +482,9 @@ pub async fn spawn_mcts_workers(
             }
         }
 
-        let client = redis::Client::open(get_redis_url().as_str())?;
+        let client = redis::Client::open(
+            format!("redis://{}:{}", config.redis_host, config.redis_port).as_str(),
+        )?;
         let mut con = client.get_connection_manager().await?;
         greedy_select(&mut con, &tree).await?;
         iters += 1;
