@@ -15,6 +15,7 @@ message InferenceRequest {
 message InferenceResponse {
     map<uint32, float> prior = 1;
     float value = 2;
+    repeated uint64 new_state = 3;
 }
 
 message GraderRequest {

@@ -28,27 +28,22 @@ from data import MathsDataset, system_prompt_message
 from datasets import load_dataset
 from train import value_path, policy_path
 
-topk = 8
-hidden_size = 4096
-vocab_size = 128256
-
-branch_token = "HIGH"
-branch_token_id = 91319
-
 
 class BatchInferenceService:
     def __init__(self, rank: int, config: dict):
+        self.config = config
+
         # CUDA_VISIBLE_DEVICES is set at module load time, so cuda:0 refers to the assigned GPU
-        self.value_head = ValueHead(hidden_size).to("cuda:0").eval()
+        self.hidden_size = self.config["hidden_size"]
+        self.value_head = ValueHead(self.hidden_size).to("cuda:0").eval()
         self.weights_lock = threading.Lock()
         self.tokenizer = AutoTokenizer.from_pretrained(model_name)
         # Each rank needs its own sglang port to avoid conflicts
         sglang_port = 30000 + rank
         self.llm = sgl.Engine(model_path=model_name, enable_return_hidden_states=True, port=sglang_port)
-        self.lm_head = nn.Linear(hidden_size, vocab_size, bias=False).to(dtype=torch.bfloat16, device="cuda:0")
+        self.lm_head = nn.Linear(self.hidden_size, self.config["vocab_size"], bias=False).to(dtype=torch.bfloat16, device="cuda:0")
 
         self.rank = rank
-        self.config = config
         self.max_wait_ms = self.config["inference_max_wait_ms"]
         self.batch_size = self.config["inference_batch_size"]
 
@@ -91,7 +86,7 @@ class BatchInferenceService:
                     print(f"Rank {self.rank}: Error syncing weights: {e}")
 
     @torch.inference_mode()
-    def run_batch(self, input_ids, topk):
+    def run_batch(self, input_ids):
         input_batch_text = [self.tokenizer.decode(input_id) for input_id in input_ids]
         print(f"Rank {self.rank}: Running batch with input_text: {input_batch_text}")
         sampling_params = {
@@ -102,7 +97,7 @@ class BatchInferenceService:
 
         with self.weights_lock:
             # this is terrible performance but sglang is buggy for returning batched hidden states!!
-            outputs = [self.llm.generate(input_ids=[ids], sampling_params=sampling_params, return_hidden_states=True, return_logprob=True, top_logprobs_num=topk)[0] for ids in input_ids]
+            outputs = [self.llm.generate(input_ids=[ids], sampling_params=sampling_params, return_hidden_states=True, return_logprob=True, top_logprobs_num=self.config["topk"])[0] for ids in input_ids]
 
             policies = []
             last_hidden_states = []
@@ -111,12 +106,19 @@ class BatchInferenceService:
             for i, output in enumerate(outputs):
                 meta_info = output["meta_info"]
                 prefill_store = meta_info["hidden_states"][-1]
+
+                print(f"Rank {self.rank}: Hidden States: {len(meta_info['hidden_states'])}")
+                print(f"Rank {self.rank}: Prefill store length: {len(prefill_store)}")
                 if len(prefill_store) == 0:
                     print(output)
                     print(self.tokenizer.decode(input_ids[i]))
                     raise ValueError("Prefill store is empty")
 
-                last_hidden_state = torch.tensor(prefill_store[-1], dtype=torch.bfloat16).cuda() # [hidden_size]
+                if type(prefill_store[0]) == list:
+                    prefill_store = prefill_store[-1]
+
+                last_hidden_state = torch.tensor(prefill_store, dtype=torch.bfloat16).cuda(device="cuda:0") # [hidden_size]
+                print(f"Rank {self.rank}: Last hidden state shape: {last_hidden_state.shape}")
                 last_hidden_states.append(last_hidden_state)
 
             last_hidden_states = torch.stack(last_hidden_states)
@@ -124,7 +126,7 @@ class BatchInferenceService:
             logits = self.lm_head(last_hidden_states)
 
         values = values.cpu().tolist()
-        top_logits, top_indices = torch.topk(logits, topk, dim=-1)
+        top_logits, top_indices = torch.topk(logits, self.config["topk"], dim=-1)
 
         top_probs = F.log_softmax(top_logits, dim=-1)
 
@@ -160,7 +162,7 @@ class BatchInferenceService:
 
             try:
                 print(f"Rank {self.rank}: Running batch with length {len(batch_input_ids)}")
-                policy, value = self.run_batch(batch_input_ids, topk)
+                policy, value = self.run_batch(batch_input_ids)
                 for fut, pol, val in zip(futures, policy, value):
                     fut.set_result((pol, val))
             except Exception as e:
@@ -203,7 +205,7 @@ def test(rank: int):
     test_state = worker.tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
     test_state = worker.tokenizer.encode(test_state)
 
-    test_policy, test_value = worker.run_batch([test_state], topk)
+    test_policy, test_value = worker.run_batch([test_state])
     print(f"Rank {rank}: {test_policy}")
     print(f"Rank {rank}: {test_value}")
     max_token = max(test_policy[0], key=test_policy[0].get)
