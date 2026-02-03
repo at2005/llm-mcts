@@ -96,9 +96,7 @@ class BatchInferenceService:
 
         with self.weights_lock:
             # this is terrible performance but sglang is buggy for returning batched hidden states!!
-            #outputs = [self.llm.generate(input_ids=[ids], sampling_params=sampling_params, return_hidden_states=True, return_logprob=True, top_logprobs_num=self.config["topk"])[0] for ids in input_ids]
-
-            outputs = self.llm.generate(input_ids=input_ids, sampling_params=sampling_params, return_hidden_states=True, return_logprob=True, top_logprobs_num=self.config["topk"])
+            outputs = [self.llm.generate(input_ids=[ids], sampling_params=sampling_params, return_hidden_states=True, return_logprob=True, top_logprobs_num=self.config["topk"])[0] for ids in input_ids]
 
             policies = []
             last_hidden_states = []

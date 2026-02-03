@@ -5,7 +5,7 @@
     "inference_batch_size": 8,
     "training_batch_size": 128,
     "inference_max_wait_ms": 10000,
-    "num_inference_gpus": 4,
+    "num_inference_gpus": 1,
     "branch_token": "HIGH",
     "branch_token_id": 91319,
     "num_training_gpus": 4,
