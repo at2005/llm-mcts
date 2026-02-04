@@ -90,8 +90,9 @@ class BatchInferenceService:
         input_batch_text = [self.tokenizer.decode(input_id) for input_id in input_ids]
         print(f"Rank {self.rank}: Running batch with input_text: {input_batch_text}")
         sampling_params = {
-            "temperature": 0.0,
-            "max_new_tokens": 1,
+            "temperature": self.config["sampling_temperature"],
+            "max_new_tokens": self.config["max_new_tokens"],
+            "stop": self.config["stop_phrase"],
         }
 
         with self.weights_lock:

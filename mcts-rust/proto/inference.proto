@@ -12,8 +12,13 @@ message InferenceRequest {
     repeated uint64 state = 1;
 }
 
+message PriorEntry {
+    repeated uint64 state = 1;
+    float prior = 2;
+}
+
 message InferenceResponse {
-    map<uint64, float> prior = 1;
+    repeated PriorEntry priors = 1;
     float value = 2;
 }
 

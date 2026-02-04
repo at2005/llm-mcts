@@ -4,15 +4,19 @@ from model import TrainingModel
 from redis import Redis
 import time
 import json
-import threading
 import os
+from torch.nn.utils.rnn import pad_sequence
+import wandb
+
 
 redis = Redis(host="localhost", port=6379, db=0)
-max_steps = 100
-train_batch_size = 128
-c_value_loss = 1.0
-c_policy_loss = 1.0
-max_wait_ms = 10 * 1000
+config = json.load(open("configs/config.json"))
+
+max_steps = config["training_max_steps"]
+train_batch_size = config["training_batch_size"]
+c_value_loss = config["c_value_loss"]
+c_ce_loss = config["c_ce_loss"]
+max_wait_ms = config["training_max_wait_ms"]
 
 value_path = "value_head.pth"
 policy_path = "llm.pth"
@@ -46,19 +50,20 @@ def train(rank: int):
     model.train()
     optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=max_steps)
+    pad_id = model.tokenizer.pad_token_id
     global_step = 0
+    wandb.init(project="mcts-language-model", name=f"train-rank-{rank}", config=config)
 
     while global_step < max_steps:
         if rank == 0 and global_step % 10 == 0:
             publish_weights(model)
 
-        policy_batch = []
-        value_batch = []
+        reward_batch = []
         state_batch = []
         
         deadline = time.monotonic() + (max_wait_ms / 1000.0)
 
-        while len(policy_batch) < train_batch_size:
+        while len(reward_batch) < train_batch_size:
 
             timeout = deadline - time.monotonic()
             if timeout <= 0:
@@ -69,41 +74,31 @@ def train(rank: int):
                 continue
 
             data = json.loads(data)
-
             state = data["state"]
-            
-            # dictionary
-            priors = data["priors"]
-
             reward = data["reward"]
 
-            policy_batch.append(priors)
-            value_batch.append(reward)
-            state_batch.append(state)
+            reward_batch.append(torch.tensor(reward, dtype=torch.bfloat16).to(device))
+            state_batch.append(torch.tensor(state, dtype=torch.long).to(device))
 
-        value_batch_tensor = torch.tensor(value_batch, dtype=torch.bfloat16).to(device)
-        state_batch_tensor = torch.tensor(state_batch, dtype=torch.long).to(device)
-
-        probs = []
-        actions = []
-        batch_idx = []
-        for b in range(len(policy_batch)):
-            for action, prob in policy_batch[b]:
-                probs.append(prob)
-                actions.append(action)
-                batch_idx.append(b)
+        reward_batch_tensor = torch.stack(reward_batch, dtype=torch.bfloat16).to(device)
+        state_batch_tensor = pad_sequence(state_batch, batch_first=True, padding_value=pad_id).to(device)
         
-        probs = torch.tensor(probs, dtype=torch.float32).to(device)
-        actions = torch.tensor(actions, dtype=torch.long).to(device)
-        batch_idx = torch.tensor(batch_idx, dtype=torch.long).to(device)
+        input_ids = state_batch_tensor[:, :-1]
+        targets = state_batch_tensor[:, 1:]
 
-        policies, values = model(state_batch_tensor)
+        logits, values = model(input_ids)
+        value_loss = F.mse_loss(values, reward_batch_tensor)
 
-        selected_logprobs : torch.Tensor = policies[batch_idx, actions]
-        policy_cross_entropy = - (probs * selected_logprobs).mean()
+        ce_loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1), ignore_index=pad_id)
 
-        value_loss = F.mse_loss(values, value_batch_tensor)
-        total_loss = c_value_loss * value_loss + c_policy_loss * policy_cross_entropy 
+        total_loss : torch.Tensor = c_value_loss * value_loss + c_ce_loss * ce_loss
+
+        wandb.log({
+            "loss/value_loss": value_loss.item(),
+            "loss/ce_loss": ce_loss.item(),
+            "loss/total_loss": total_loss.item(),
+        })
+
         total_loss.backward()
         optimizer.step()
         scheduler.step()

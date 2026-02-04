@@ -26,6 +26,10 @@ pub struct ExperimentConfig {
     pub eos_token_id: u64,
     pub branch_token: String,
     pub branch_token_id: u64,
+    pub c_value_loss: f32,
+    pub c_ce_loss: f32,
+    pub training_max_wait_ms: u32,
+    pub training_max_steps: u32,
 }
 
 pub fn load_config() -> Result<ExperimentConfig> {

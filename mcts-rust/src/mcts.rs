@@ -17,12 +17,27 @@ pub const NUM_WORKERS: usize = 2;
 
 pub const REPLAY_BUFFER_KEY: &str = "replay_buffer";
 
+#[derive(Serialize, Deserialize, Clone)]
+pub struct PriorEntry {
+    pub state: Vec<u64>,
+    pub prior: f32,
+}
+
 #[derive(Serialize, Deserialize)]
 pub struct ReplayBufferEntry {
     pub state: Vec<u64>,
-    pub action: u64,
-    pub priors: Vec<(u64, f32)>,
+    pub prompt_id: u32,
     pub reward: f32,
+}
+
+impl ReplayBufferEntry {
+    pub fn new(state: Vec<u64>, prompt_id: u32, reward: f32) -> Self {
+        Self {
+            state,
+            prompt_id,
+            reward,
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -64,15 +79,15 @@ impl AtomicF32 {
 pub struct Edge {
     pub child_id: AtomicUsize,
     pub prior: f32,
-    pub action: u64,
+    pub state: Arc<[u64]>,
 }
 
 impl Edge {
-    pub fn new(prior: f32, action: u64) -> Self {
+    pub fn new(prior: f32, state: Arc<[u64]>) -> Self {
         Self {
             child_id: AtomicUsize::new(NO_CHILD),
             prior,
-            action,
+            state,
         }
     }
 }
@@ -87,18 +102,16 @@ pub struct Expansion {
 pub struct Node {
     pub visits: AtomicU32,
     pub parent: Option<NodeId>,
-    pub action: Option<u64>,
     pub accumulated_value: Arc<AtomicF32>,
     pub state: Arc<[u64]>,
     pub expansion: tokio::sync::OnceCell<Expansion>,
 }
 
 impl Node {
-    pub fn new(parent: Option<NodeId>, action: Option<u64>, state: Arc<[u64]>) -> Self {
+    pub fn new(parent: Option<NodeId>, state: Arc<[u64]>) -> Self {
         Self {
             visits: AtomicU32::new(0),
             parent,
-            action,
             state,
             expansion: tokio::sync::OnceCell::new(),
             accumulated_value: Arc::new(AtomicF32::new(0.0)),
@@ -114,7 +127,9 @@ impl Node {
                     .await?;
                 let edges: Vec<Edge> = priors
                     .iter()
-                    .map(|(action, prior)| Edge::new(*prior, *action))
+                    .map(|prior_entry| {
+                        Edge::new(prior_entry.prior, prior_entry.state.clone().into())
+                    })
                     .collect();
 
                 self.accumulated_value.store(value, Ordering::Relaxed);
@@ -284,11 +299,7 @@ impl Tree {
             ) {
                 Ok(_) => {
                     // we have acquired the right to allocate the child
-                    let new_node = Node::new(
-                        Some(parent),
-                        Some(edge.action),
-                        self.build_new_state(parent, edge.action as u64),
-                    );
+                    let new_node = Node::new(Some(parent), edge.state.clone());
                     let new_node_id = self.node_alloc(new_node);
                     edge.child_id.store(new_node_id, Ordering::Release);
                     return Ok(new_node_id);
@@ -334,7 +345,7 @@ pub async fn mcts(tree: &Tree) -> Result<()> {
             let edge_idx = tree.select(node_obj, &expansion, false)?;
             let edge = &expansion.edges[edge_idx];
 
-            if edge.action == tree.config.eos_token_id {
+            if edge.state.last().expect("State is empty") == &tree.config.eos_token_id {
                 eos_encountered = true;
                 break;
             }
@@ -378,31 +389,15 @@ pub async fn mcts(tree: &Tree) -> Result<()> {
 pub async fn greedy_select(con: &mut ConnectionManager, tree: &Tree) -> Result<Vec<NodeId>> {
     let mut nodes = Vec::new();
     let mut node = 0;
-    let mut replay_buffer = Vec::new();
+
+    // greedily select the best path
     while !tree.is_leaf(node)? {
-        // we want to push all nodes along this path to the replay buffer
-        let node_obj = tree.get_node(node);
-        let priors = node_obj
-            .expansion
-            .get()
-            .expect("Expansion is None")
-            .edges
-            .iter()
-            .map(|edge| (edge.action, edge.prior))
-            .collect::<Vec<_>>();
-
-        replay_buffer.push((
-            node_obj.state.iter().copied().collect::<Vec<_>>(),
-            node_obj.action.unwrap(),
-            priors,
-        ));
-
         let expansion = tree.get_node(node).ensure_expansion(tree).await?;
         let edge_idx = tree.select(tree.get_node(node), &expansion, true)?;
         let edge = &expansion.edges[edge_idx];
         node = edge.child_id.load(Ordering::Relaxed);
         nodes.push(node);
-        if edge.action == tree.config.eos_token_id {
+        if edge.state.last().expect("State is empty") == &tree.config.eos_token_id {
             break;
         }
     }
@@ -412,27 +407,15 @@ pub async fn greedy_select(con: &mut ConnectionManager, tree: &Tree) -> Result<V
 
     let grader_response = tree
         .inference_client_pool
-        .send_grader_request(tree.episode_id, tree.prompt_id, state)
+        .send_grader_request(tree.episode_id, tree.prompt_id, state.clone())
         .await?;
+
     let reward = grader_response.into_inner().reward;
 
-    let serialized_replay_buffer = replay_buffer
-        .iter()
-        .map(|(state, action, priors)| {
-            let entry = ReplayBufferEntry {
-                state: state.to_vec(),
-                action: action.clone(),
-                priors: priors.clone(),
-                reward,
-            };
-            let serialized = serde_json::to_string(&entry).unwrap();
-            serialized
-        })
-        .collect::<Vec<String>>();
-
-    for serialized in serialized_replay_buffer {
-        let _: () = con.lpush(REPLAY_BUFFER_KEY, serialized).await?;
-    }
+    let replay_buffer_entry = ReplayBufferEntry::new(state, tree.prompt_id, reward);
+    let serialized = serde_json::to_string(&replay_buffer_entry)
+        .expect("Failed to serialize replay buffer entry");
+    let _: () = con.lpush(REPLAY_BUFFER_KEY, serialized).await?;
 
     Ok(nodes)
 }
@@ -442,8 +425,6 @@ pub async fn spawn_mcts_workers(
     max_samples: usize,
     config: ExperimentConfig,
 ) -> Result<()> {
-    /* This function is used to spawn a worker pool for a single prompt */
-    let num_parallel_workers = 10;
     let mut iters = 0;
     loop {
         if iters > max_samples {
@@ -462,11 +443,11 @@ pub async fn spawn_mcts_workers(
         info!("Spawning mcts worker pool for prompt id: {}", prompt_id);
         info!("Problem: {:?}", problem);
 
-        let root_node = Node::new(None, None, problem.into());
+        let root_node = Node::new(None, problem.into());
         tree.node_alloc(root_node);
         let tree = Arc::new(tree);
 
-        let handles: Vec<_> = (0..num_parallel_workers)
+        let handles: Vec<_> = (0..config.num_workers_per_prompt as usize)
             .map(|_| {
                 let tree = Arc::clone(&tree);
                 tokio::spawn(async move { mcts(&tree).await })

@@ -32,6 +32,4 @@ class TrainingModel(nn.Module):
         logits : torch.Tensor = outputs.logits[:, -1, :] # [batch_size, vocab_size]
         value = self.value_head(last_tok_hidden_states).squeeze(-1) # [batch_size]
 
-        logprobs = F.log_softmax(logits, dim=-1) # [batch_size, vocab_size]
-
-        return logprobs, value # [batch_size, vocab_size], [batch_size]
+        return logits, value # [batch_size, vocab_size], [batch_size]

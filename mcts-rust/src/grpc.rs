@@ -7,7 +7,7 @@ pub use crate::inference;
 use inference::inference_client::InferenceClient;
 use inference::{
     GetPromptRequest, GetPromptResponse, GraderRequest, GraderResponse, InferenceRequest,
-    InferenceResponse,
+    InferenceResponse, PriorEntry,
 };
 use rand::seq::IteratorRandom;
 
@@ -83,12 +83,12 @@ impl InferenceClientPool {
         Ok(response)
     }
 
-    pub async fn policy_value_head(&self, state: &[u64]) -> Result<(BTreeMap<u64, f32>, f32)> {
+    pub async fn policy_value_head(&self, state: &[u64]) -> Result<(Vec<PriorEntry>, f32)> {
         let mut request = Request::new(InferenceRequest {
             state: state.to_vec(),
         });
         request.set_timeout(std::time::Duration::from_secs(120));
         let response = self.send_request(request).await?.into_inner();
-        Ok((response.prior, response.value))
+        Ok((response.priors, response.value))
     }
 }
