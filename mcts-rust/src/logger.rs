@@ -1,0 +1,62 @@
+use crate::mcts::{Node, NodeId};
+use anyhow::Result;
+use reqwest::Client;
+use serde_json::json;
+use std::sync::atomic::Ordering;
+
+pub struct Logger {
+    http_client: reqwest::Client,
+    base_url: String,
+    active: bool,
+}
+
+impl Logger {
+    pub fn new(base_url: Option<String>) -> Result<Self> {
+        let base_url = base_url.unwrap_or("http://localhost:3001".to_string());
+        let http_client = Client::new();
+        Ok(Self {
+            http_client,
+            base_url,
+            active: true,
+        })
+    }
+
+    pub fn deactivate(&mut self) {
+        self.active = false;
+    }
+
+    pub fn activate(&mut self) {
+        self.active = true;
+    }
+
+    pub fn is_active(&self) -> bool {
+        self.active
+    }
+
+    pub async fn log_node(&self, node_id: NodeId, node: &Node) -> Result<()> {
+        if !self.active {
+            return Ok(());
+        }
+
+        let payload = json!({
+            "id": node_id,
+            "parentId": node.parent.unwrap_or(usize::MAX),
+            "contents": node.state.iter().copied().collect::<Vec<_>>(),
+            "visits": node.visits.load(Ordering::Relaxed),
+            "value": node.accumulated_value.load(Ordering::Relaxed),
+        });
+
+        let response = self
+            .http_client
+            .post(format!("{}/api/nodes", self.base_url))
+            .header("Content-Type", "application/json")
+            .body(payload.to_string())
+            .send()
+            .await?;
+        if !response.status().is_success() {
+            return Err(anyhow::anyhow!("Failed to log node: {}", response.status()));
+        }
+
+        Ok(())
+    }
+}

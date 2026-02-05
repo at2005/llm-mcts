@@ -5,10 +5,10 @@ use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 use std::sync::{Arc, OnceLock};
 use tracing::{error, info};
 
-type NodeId = usize;
-use crate::grpc::InferenceClientPool;
-
+pub type NodeId = usize;
 use crate::config::ExperimentConfig;
+use crate::grpc::InferenceClientPool;
+use crate::logger::Logger;
 pub const ROOT_NODE_ID: NodeId = 0;
 const MAX_NODES: usize = 1000000;
 pub const NO_CHILD: usize = usize::MAX;
@@ -150,6 +150,7 @@ pub struct Tree {
     pub episode_id: u32,
     pub prompt_id: u32,
     pub config: ExperimentConfig,
+    pub logger: Logger,
 }
 
 impl Tree {
@@ -166,13 +167,16 @@ impl Tree {
             episode_id,
             prompt_id,
             config,
+            logger: Logger::new(None)?,
         })
     }
 
-    pub fn node_alloc(&self, node: Node) -> NodeId {
+    pub async fn node_alloc(&self, node: Node) -> Result<NodeId> {
         let id = self.size.fetch_add(1, Ordering::Relaxed);
         self.nodes[id].set(node).expect("slot already taken");
-        id
+        let node = self.nodes[id].get().expect("node uninitialized");
+        self.logger.log_node(id, &node).await?;
+        Ok(id)
     }
 
     pub fn get_node(&self, id: NodeId) -> &Node {
@@ -301,7 +305,7 @@ impl Tree {
                     // we have acquired the right to allocate the child
                     let new_state = self.build_new_state(parent, edge.contents.clone());
                     let new_node = Node::new(Some(parent), new_state);
-                    let new_node_id = self.node_alloc(new_node);
+                    let new_node_id = self.node_alloc(new_node).await?;
                     edge.child_id.store(new_node_id, Ordering::Release);
                     return Ok(new_node_id);
                 }
@@ -445,7 +449,7 @@ pub async fn spawn_mcts_workers(
         info!("Problem: {:?}", problem);
 
         let root_node = Node::new(None, problem.into());
-        tree.node_alloc(root_node);
+        tree.node_alloc(root_node).await?;
         let tree = Arc::new(tree);
 
         let handles: Vec<_> = (0..config.num_workers_per_prompt as usize)

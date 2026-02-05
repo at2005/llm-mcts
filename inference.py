@@ -115,8 +115,6 @@ class BatchInferenceService:
 
     @torch.inference_mode()
     def run_batch(self, input_ids):
-        input_batch_text = [self.tokenizer.decode(input_id) for input_id in input_ids]
-        print(f"Rank {self.rank}: Running batch with input_text: {input_batch_text}")
         sampling_params = {
             "temperature": self.config["sampling_temperature"],
             "max_new_tokens": self.config["max_new_tokens"],
