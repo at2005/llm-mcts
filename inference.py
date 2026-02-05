@@ -35,12 +35,13 @@ class BatchInferenceService:
 
         # CUDA_VISIBLE_DEVICES is set at module load time, so cuda:0 refers to the assigned GPU
         self.hidden_size = self.config["hidden_size"]
-        self.value_head = ValueHead(self.hidden_size).to("cuda:0").eval()
+        self.value_head = ValueHead(self.hidden_size).to(device="cuda:0", dtype=torch.bfloat16).eval()
         self.weights_lock = threading.Lock()
         self.tokenizer = AutoTokenizer.from_pretrained(model_name)
+        self.tokenizer.pad_token = self.tokenizer.eos_token
         # Each rank needs its own sglang port to avoid conflicts
         sglang_port = 30000 + rank
-        self.llm = sgl.Engine(model_path=model_name, enable_return_hidden_states=True, port=sglang_port)
+        self.llm = sgl.Engine(model_path=model_name, enable_return_hidden_states=True, port=sglang_port, mem_fraction_static=0.2)
         self.model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.bfloat16).to("cuda:0")
 
         self.rank = rank
@@ -92,9 +93,9 @@ class BatchInferenceService:
             padded_input_ids[i, - len(token_ids) : ] = torch.tensor(token_ids, dtype=torch.long, device="cuda:0")
             attention_mask[i, - len(token_ids) : ] = 1
 
-        model_outputs = self.model(input_ids=padded_input_ids, attention_mask=attention_mask)
+        model_outputs = self.model(input_ids=padded_input_ids, attention_mask=attention_mask, output_hidden_states=True)
         full_logits = model_outputs.logits
-        last_hidden_states = model_outputs.last_hidden_state
+        last_hidden_states = model_outputs.hidden_states[-1]
 
         logprobs = F.log_softmax(full_logits, dim=-1) # [batch_size, max_length, vocab_size]
         
@@ -132,8 +133,8 @@ class BatchInferenceService:
 
             outputs = self.llm.generate(input_ids=replicated_input_ids, sampling_params=sampling_params)
 
-            generated_ids = outputs["output_ids"]
-            summed_logprobs, last_hidden_state = self.compute_logprobs(input_ids, generated_ids)
+            generated_ids = [output["output_ids"] for output in outputs]
+            summed_logprobs, last_hidden_state = self.compute_logprobs(replicated_input_ids, generated_ids)
 
             # [batch_size * N] -> [batch_size, N]
             grouped_summed_logprobs = summed_logprobs.reshape(-1, N) # [batch_size, N]
@@ -172,7 +173,7 @@ class BatchInferenceService:
                 print(f"Rank {self.rank}: Running batch with length {len(batch_input_ids)}")
                 generated_ids, probabilities, values = self.run_batch(batch_input_ids)
                 for fut, tok_ids, policies, val in zip(futures, generated_ids, probabilities, values):
-                    policy = [{"state":tok_ids, "prior" : prob} for tok_ids, prob in zip(tok_ids, policies)] # [{"state": [tok_ids], "prior": prob}]
+                    policy = [inference_pb2.PriorEntry(state=tok_ids, prior=prob) for tok_ids, prob in zip(tok_ids, policies)]
                     fut.set_result((policy, val))
             except Exception as e:
                 for fut in futures:
@@ -189,8 +190,8 @@ class InferenceServicer(inference_pb2_grpc.InferenceServicer):
         fut = Future()
         state = list(request.state)
         self.batch_inference_service.per_gpu_queue.put((state, fut))
-        policies, values = fut.result(timeout=3 * self.batch_inference_service.max_wait_ms / 1000.0)
-        return inference_pb2.InferenceResponse(prior=policies, value=values)
+        policies, values = fut.result(timeout=60 * self.batch_inference_service.max_wait_ms / 1000.0)
+        return inference_pb2.InferenceResponse(priors=policies, value=values)
     
     def grader(self, request : GraderRequest, context):
         state = request.state
