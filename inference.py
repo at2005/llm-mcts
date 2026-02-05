@@ -94,7 +94,6 @@ class BatchInferenceService:
 
         model_outputs = self.model(input_ids=padded_input_ids, attention_mask=attention_mask)
         full_logits = model_outputs.logits
-        
         last_hidden_states = model_outputs.last_hidden_state
 
         logprobs = F.log_softmax(full_logits, dim=-1) # [batch_size, max_length, vocab_size]
@@ -123,19 +122,28 @@ class BatchInferenceService:
             "stop": self.config["stop_phrase"],
         }
 
-        N = 4
+        N = self.config["topk"]
 
         with self.weights_lock:
             replicated_input_ids = []
+
             for inp in input_ids:
                 replicated_input_ids.extend([inp] * N)
 
             outputs = self.llm.generate(input_ids=replicated_input_ids, sampling_params=sampling_params)
+
             generated_ids = outputs["output_ids"]
             summed_logprobs, last_hidden_state = self.compute_logprobs(input_ids, generated_ids)
-            values : torch.Tensor = self.value_head(last_hidden_state).squeeze(-1) # [batch_size]
 
-        return summed_logprobs, values
+            # [batch_size * N] -> [batch_size, N]
+            grouped_summed_logprobs = summed_logprobs.reshape(-1, N) # [batch_size, N]
+
+            grouped_generated_ids = [generated_ids[i:i+N] for i in range(0, len(generated_ids), N)] # [batch_size, N]
+
+            values : torch.Tensor = self.value_head(last_hidden_state).squeeze(-1) # [batch_size]
+            grouped_values = values.reshape(-1, N).mean(dim=-1) # [batch_size]
+
+        return (grouped_generated_ids, grouped_summed_logprobs.exp().cpu().tolist(), grouped_values.cpu().tolist())
 
 
     def batch_worker(self):
@@ -162,9 +170,10 @@ class BatchInferenceService:
 
             try:
                 print(f"Rank {self.rank}: Running batch with length {len(batch_input_ids)}")
-                policy, value = self.run_batch(batch_input_ids)
-                for fut, pol, val in zip(futures, policy, value):
-                    fut.set_result((pol, val))
+                generated_ids, probabilities, values = self.run_batch(batch_input_ids)
+                for fut, tok_ids, policies, val in zip(futures, generated_ids, probabilities, values):
+                    policy = [{"state":tok_ids, "prior" : prob} for tok_ids, prob in zip(tok_ids, policies)] # [{"state": [tok_ids], "prior": prob}]
+                    fut.set_result((policy, val))
             except Exception as e:
                 for fut in futures:
                     fut.set_exception(e)

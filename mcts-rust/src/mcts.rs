@@ -79,15 +79,15 @@ impl AtomicF32 {
 pub struct Edge {
     pub child_id: AtomicUsize,
     pub prior: f32,
-    pub state: Arc<[u64]>,
+    pub contents: Arc<[u64]>,
 }
 
 impl Edge {
-    pub fn new(prior: f32, state: Arc<[u64]>) -> Self {
+    pub fn new(prior: f32, contents: Arc<[u64]>) -> Self {
         Self {
             child_id: AtomicUsize::new(NO_CHILD),
             prior,
-            state,
+            contents,
         }
     }
 }
@@ -273,6 +273,17 @@ impl Tree {
         Ok(node.expansion.get().is_none())
     }
 
+    pub fn build_new_state(&self, parent: NodeId, contents: Arc<[u64]>) -> Arc<[u64]> {
+        let parent_node = self.get_node(parent);
+        parent_node
+            .state
+            .iter()
+            .copied()
+            .chain(contents.iter().copied())
+            .collect::<Vec<_>>()
+            .into()
+    }
+
     pub async fn child_alloc(&self, parent: NodeId, edge: &Edge) -> Result<NodeId> {
         loop {
             let child_id = edge.child_id.load(Ordering::Acquire);
@@ -288,7 +299,8 @@ impl Tree {
             ) {
                 Ok(_) => {
                     // we have acquired the right to allocate the child
-                    let new_node = Node::new(Some(parent), edge.state.clone());
+                    let new_state = self.build_new_state(parent, edge.contents.clone());
+                    let new_node = Node::new(Some(parent), new_state);
                     let new_node_id = self.node_alloc(new_node);
                     edge.child_id.store(new_node_id, Ordering::Release);
                     return Ok(new_node_id);
@@ -334,7 +346,7 @@ pub async fn mcts(tree: &Tree) -> Result<()> {
             let edge_idx = tree.select(node_obj, &expansion, false)?;
             let edge = &expansion.edges[edge_idx];
 
-            if edge.state.last().expect("State is empty") == &tree.config.eos_token_id {
+            if edge.contents.last().expect("State is empty") == &tree.config.eos_token_id {
                 eos_encountered = true;
                 break;
             }
@@ -386,7 +398,7 @@ pub async fn greedy_select(con: &mut ConnectionManager, tree: &Tree) -> Result<V
         let edge = &expansion.edges[edge_idx];
         node = edge.child_id.load(Ordering::Relaxed);
         nodes.push(node);
-        if edge.state.last().expect("State is empty") == &tree.config.eos_token_id {
+        if edge.contents.last().expect("State is empty") == &tree.config.eos_token_id {
             break;
         }
     }
