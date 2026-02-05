@@ -20,7 +20,7 @@
     "c_puct": 1.0,
     "virtual_loss": 1,
     "eos_token_id": 128001,
-    "sampling_temperature": 0.3,
+    "sampling_temperature": 0.7,
     "stop_phrase": "<|end_step|>",
     "c_value_loss": 1.0,
     "c_ce_loss": 1.0,
