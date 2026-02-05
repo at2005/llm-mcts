@@ -273,17 +273,6 @@ impl Tree {
         Ok(node.expansion.get().is_none())
     }
 
-    pub fn build_new_state(&self, node: NodeId, action: u64) -> Arc<[u64]> {
-        let current_node = self.get_node(node);
-        current_node
-            .state
-            .iter()
-            .copied()
-            .chain(std::iter::once(action))
-            .collect::<Vec<_>>()
-            .into()
-    }
-
     pub async fn child_alloc(&self, parent: NodeId, edge: &Edge) -> Result<NodeId> {
         loop {
             let child_id = edge.child_id.load(Ordering::Acquire);

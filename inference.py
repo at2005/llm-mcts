@@ -41,7 +41,7 @@ class BatchInferenceService:
         # Each rank needs its own sglang port to avoid conflicts
         sglang_port = 30000 + rank
         self.llm = sgl.Engine(model_path=model_name, enable_return_hidden_states=True, port=sglang_port)
-        self.lm_head = nn.Linear(self.hidden_size, self.config["vocab_size"], bias=False).to(dtype=torch.bfloat16, device="cuda:0")
+        self.model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.bfloat16).to("cuda:0")
 
         self.rank = rank
         self.max_wait_ms = self.config["inference_max_wait_ms"]
@@ -49,23 +49,15 @@ class BatchInferenceService:
 
         self.per_gpu_queue = queue.Queue()
     
-        self.load_lm_head()
         self.stop_token_id = self.config["branch_token_id"]
 
-    def load_lm_head(self):
-        model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.bfloat16).to("cuda:0")
-        lm_head_weight = model.lm_head.weight.detach().clone()
-        self.lm_head.weight.data.copy_(lm_head_weight)
-        del model
-        gc.collect()
-        torch.cuda.empty_cache()
-    
     def sync_weights(self):
         if os.path.exists(value_path) and os.path.exists(policy_path):
             with self.weights_lock:
                 state_dict = torch.load(value_path, map_location="cuda:0", weights_only=True)
                 self.value_head.load_state_dict(state_dict)
                 self.llm.update_weights_from_disk(policy_path)
+                self.model.load_state_dict(torch.load(policy_path, map_location="cuda:0", weights_only=True))
             print(f"Rank {self.rank}: Loaded new weights")
 
     def weight_subscriber(self):
@@ -86,6 +78,42 @@ class BatchInferenceService:
                     print(f"Rank {self.rank}: Error syncing weights: {e}")
 
     @torch.inference_mode()
+    def compute_logprobs(self, input_ids, generated_ids):
+        batch_token_ids = [inp + outp for inp, outp in zip(input_ids, generated_ids)]
+        generated_lengths = [len(outp) for outp in generated_ids]
+
+        max_length = max(len(token_ids) for token_ids in batch_token_ids)
+
+        padded_input_ids = torch.full((len(batch_token_ids), max_length), self.tokenizer.pad_token_id, dtype=torch.long, device="cuda:0")
+        attention_mask = torch.zeros((len(batch_token_ids), max_length), dtype=torch.long, device="cuda:0")
+
+        for i, token_ids in enumerate(batch_token_ids):
+            # left padding
+            padded_input_ids[i, - len(token_ids) : ] = torch.tensor(token_ids, dtype=torch.long, device="cuda:0")
+            attention_mask[i, - len(token_ids) : ] = 1
+
+        model_outputs = self.model(input_ids=padded_input_ids, attention_mask=attention_mask)
+        full_logits = model_outputs.logits
+        
+        last_hidden_states = model_outputs.last_hidden_state
+
+        logprobs = F.log_softmax(full_logits, dim=-1) # [batch_size, max_length, vocab_size]
+        
+        summed_logprobs = torch.zeros((len(batch_token_ids)), dtype=torch.float32, device="cuda:0")
+        hidden_states = torch.zeros((len(batch_token_ids), self.hidden_size), dtype=torch.bfloat16, device="cuda:0")
+
+        for i in range(len(batch_token_ids)):
+            gen_length = generated_lengths[i]
+            hidden_states[i] = last_hidden_states[i, - gen_length - 1, :]
+
+            labels = padded_input_ids[i, - gen_length: ]
+            logprobs_tok = logprobs[i, - gen_length - 1: -1, :]
+            summed_logprobs[i] = logprobs_tok.gather(dim=-1, index=labels.unsqueeze(-1)).squeeze(-1).sum()
+
+        return summed_logprobs, hidden_states
+
+
+    @torch.inference_mode()
     def run_batch(self, input_ids):
         input_batch_text = [self.tokenizer.decode(input_id) for input_id in input_ids]
         print(f"Rank {self.rank}: Running batch with input_text: {input_batch_text}")
@@ -95,47 +123,19 @@ class BatchInferenceService:
             "stop": self.config["stop_phrase"],
         }
 
+        N = 4
+
         with self.weights_lock:
-            # this is terrible performance but sglang is buggy for returning batched hidden states!!
-            outputs = [self.llm.generate(input_ids=[ids], sampling_params=sampling_params, return_hidden_states=True, return_logprob=True, top_logprobs_num=self.config["topk"])[0] for ids in input_ids]
+            replicated_input_ids = []
+            for inp in input_ids:
+                replicated_input_ids.extend([inp] * N)
 
-            policies = []
-            last_hidden_states = []
-            values = []
+            outputs = self.llm.generate(input_ids=replicated_input_ids, sampling_params=sampling_params)
+            generated_ids = outputs["output_ids"]
+            summed_logprobs, last_hidden_state = self.compute_logprobs(input_ids, generated_ids)
+            values : torch.Tensor = self.value_head(last_hidden_state).squeeze(-1) # [batch_size]
 
-            for i, output in enumerate(outputs):
-                meta_info = output["meta_info"]
-                prefill_store = meta_info["hidden_states"][-1]
-
-                print(f"Rank {self.rank}: Hidden States: {len(meta_info['hidden_states'])}")
-                print(f"Rank {self.rank}: Prefill store length: {len(prefill_store)}")
-                if len(prefill_store) == 0:
-                    print(output)
-                    print(self.tokenizer.decode(input_ids[i]))
-                    raise ValueError("Prefill store is empty")
-
-                if type(prefill_store[0]) == list:
-                    prefill_store = prefill_store[-1]
-
-                last_hidden_state = torch.tensor(prefill_store, dtype=torch.bfloat16).cuda(device="cuda:0") # [hidden_size]
-                print(f"Rank {self.rank}: Last hidden state shape: {last_hidden_state.shape}")
-                last_hidden_states.append(last_hidden_state)
-
-            last_hidden_states = torch.stack(last_hidden_states)
-            values : torch.Tensor = self.value_head(last_hidden_states.float()).squeeze(-1) # [batch_size]
-            logits = self.lm_head(last_hidden_states)
-
-        values = values.cpu().tolist()
-        top_logits, top_indices = torch.topk(logits, self.config["topk"], dim=-1)
-
-        top_probs = F.log_softmax(top_logits, dim=-1)
-
-        top_probs = top_probs.cpu().tolist()
-        top_indices = top_indices.cpu().tolist()
-
-        policies = [{int(i): np.exp(p) for i, p in zip(indices, probs)} for indices, probs in zip(top_indices, top_probs)]
-
-        return policies, values
+        return summed_logprobs, values
 
 
     def batch_worker(self):
