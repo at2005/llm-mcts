@@ -4,8 +4,7 @@ export type TreeNode = {
   contents: number[];
   visits: number;
   value: number;
-  decodedContent: string;
-  cumulativeText: string;
+  decodedState: string;
   createdAt: string;
 };
 

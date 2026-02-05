@@ -30,7 +30,7 @@ function dedupeEdges(edges: TreeEdge[]): TreeEdge[] {
 export default function App() {
   const [nodes, setNodes] = useState<TreeNode[]>([]);
   const [edges, setEdges] = useState<TreeEdge[]>([]);
-  const [hoveredNodeId, setHoveredNodeId] = useState<string | null>(null);
+  const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [socketState, setSocketState] = useState<"connecting" | "live" | "offline">("connecting");
 
@@ -116,11 +116,18 @@ export default function App() {
     return new Map(nodes.map((node) => [node.id, node]));
   }, [nodes]);
 
-  const hoveredNode = hoveredNodeId ? nodeIndex.get(hoveredNodeId) ?? null : null;
+  useEffect(() => {
+    if (selectedNodeId && !nodeIndex.has(selectedNodeId)) {
+      setSelectedNodeId(null);
+    }
+  }, [nodeIndex, selectedNodeId]);
+
+  const selectedNode = selectedNodeId ? nodeIndex.get(selectedNodeId) ?? null : null;
 
   const flowNodes = useMemo<Node[]>(() => {
     return nodes.map((node) => {
-      const snippet = node.decodedContent.trim();
+      const snippet = node.decodedState.trim();
+      const selected = node.id === selectedNodeId;
       return {
         id: node.id,
         data: {
@@ -132,11 +139,17 @@ export default function App() {
           )
         },
         position: { x: 0, y: 0 },
+        style: selected
+          ? {
+              border: "2px solid var(--accent)",
+              boxShadow: "0 0 0 2px color-mix(in srgb, var(--accent) 20%, transparent)"
+            }
+          : undefined,
         draggable: false,
         selectable: true
       };
     });
-  }, [nodes]);
+  }, [nodes, selectedNodeId]);
 
   const flowEdges = useMemo<Edge[]>(() => {
     return edges.map((edge) => ({
@@ -151,12 +164,8 @@ export default function App() {
     return layoutElements(flowNodes, flowEdges);
   }, [flowEdges, flowNodes]);
 
-  const onNodeEnter: NodeMouseHandler = (_event, node) => {
-    setHoveredNodeId(node.id);
-  };
-
-  const onNodeLeave: NodeMouseHandler = () => {
-    setHoveredNodeId(null);
+  const onNodeClick: NodeMouseHandler = (_event, node) => {
+    setSelectedNodeId(node.id);
   };
 
   return (
@@ -182,8 +191,8 @@ export default function App() {
             nodes={layoutedNodes}
             edges={layoutedEdges}
             fitView
-            onNodeMouseEnter={onNodeEnter}
-            onNodeMouseLeave={onNodeLeave}
+            onNodeClick={onNodeClick}
+            onPaneClick={() => setSelectedNodeId(null)}
             proOptions={{ hideAttribution: true }}
           >
             <Background gap={18} size={1} />
@@ -195,32 +204,35 @@ export default function App() {
 
       <aside className="side-panel">
         <section>
-          <h2>Hover State</h2>
-          {hoveredNode ? (
+          <h2>Selected Node</h2>
+          {selectedNode ? (
             <>
               <p>
-                <strong>Node:</strong> {hoveredNode.id}
+                <strong>Node:</strong> {selectedNode.id}
               </p>
               <p>
-                <strong>Parent:</strong> {hoveredNode.parentId ?? "(root)"}
+                <strong>Parent:</strong> {selectedNode.parentId ?? "(root)"}
               </p>
               <p>
-                <strong>Cumulative detokenized text:</strong>
+                <strong>Decoded state:</strong>
               </p>
-              <pre>{hoveredNode.cumulativeText || "(empty)"}</pre>
+              <pre>{selectedNode.decodedState || "(empty)"}</pre>
               <p>
-                <strong>Visits:</strong> {hoveredNode.visits}
+                <strong>Visits:</strong> {selectedNode.visits}
               </p>
               <p>
-                <strong>Value:</strong> {hoveredNode.value}
+                <strong>Value:</strong> {selectedNode.value}
               </p>
               <p>
                 <strong>Raw contents:</strong>
               </p>
-              <pre>{JSON.stringify(hoveredNode.contents)}</pre>
+              <pre>{JSON.stringify(selectedNode.contents)}</pre>
+              <p>
+                <strong>Created:</strong> {selectedNode.createdAt}
+              </p>
             </>
           ) : (
-            <p>Hover a node to inspect cumulative decoded state.</p>
+            <p>Click a node to inspect its properties.</p>
           )}
         </section>
 

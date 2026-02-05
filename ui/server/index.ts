@@ -125,18 +125,13 @@ async function start() {
     const parentRaw = payload.parentId;
     const parentId = isRootParentId(parentRaw) ? null : normalizeNodeId(parentRaw as string | number);
     const parent = parentId ? store.getNode(parentId) : undefined;
-
     if (parentId && !parent) {
       res.status(404).json({ error: `Parent node '${parentId}' not found.` });
       return;
     }
 
-    const parentTokens = parent?.cumulativeTokens ?? [];
-    const cumulativeTokens = [...parentTokens, ...payload.contents];
-    const decodedContent = decodeTokens(tokenizer, payload.contents);
-    const cumulativeText = decodeTokens(tokenizer, cumulativeTokens);
-
-    const savedNode = store.addNode({ ...payload, id: nodeId, parentId }, decodedContent, cumulativeText, cumulativeTokens);
+    const decodedState = decodeTokens(tokenizer, payload.contents);
+    const savedNode = store.addNode({ ...payload, id: nodeId, parentId }, decodedState);
     const edge = savedNode.parentId ? store.buildEdge(savedNode.parentId, savedNode.id) : null;
 
     broadcast({ type: "node_added", node: savedNode, edge });

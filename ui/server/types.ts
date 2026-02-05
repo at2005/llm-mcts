@@ -12,13 +12,11 @@ export type StoredNode = {
   contents: number[];
   visits: number;
   value: number;
-  decodedContent: string;
-  cumulativeText: string;
-  cumulativeTokens: number[];
+  decodedState: string;
   createdAt: string;
 };
 
-export type PublicNode = Omit<StoredNode, "cumulativeTokens">;
+export type PublicNode = StoredNode;
 
 export type EdgeRecord = {
   id: string;

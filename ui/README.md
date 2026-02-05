@@ -7,7 +7,7 @@ React + Express app to visualize Monte Carlo Tree Search as your runner posts no
 - `POST /api/nodes` endpoint for ingesting nodes in real time
 - WebSocket stream at `/ws` for live UI updates
 - DAG rendering of nodes and edges
-- Hover on a node to inspect cumulative state (detokenized with Llama 3 tokenizer)
+- Click a node to inspect its decoded state and properties
 - `POST /api/reset` endpoint to clear the tree
 
 ## Requirements
