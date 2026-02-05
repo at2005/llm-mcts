@@ -53,7 +53,8 @@ export default function App() {
       });
 
     const wsProtocol = window.location.protocol === "https:" ? "wss" : "ws";
-    const socket = new WebSocket(`${wsProtocol}://${window.location.host}/ws`);
+    const wsOverride = (import.meta.env.VITE_MCTS_WS_URL as string | undefined)?.trim();
+    const socket = new WebSocket(wsOverride || `${wsProtocol}://${window.location.host}/ws`);
 
     socket.onopen = () => {
       if (active) {

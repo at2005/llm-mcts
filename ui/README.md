@@ -38,6 +38,13 @@ bun run dev
 - UI: `http://localhost:5173`
 - API: `http://localhost:3001`
 
+Optional client overrides (useful for SSH tunnels / non-proxied setups):
+
+```bash
+export VITE_MCTS_API_BASE=http://localhost:3001
+export VITE_MCTS_WS_URL=ws://localhost:3001/ws
+```
+
 ## API
 
 ### `POST /api/nodes`
