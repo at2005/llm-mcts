@@ -1,6 +1,8 @@
 from datasets import load_dataset
 from torch.utils.data import DataLoader, Dataset
 from redis import Redis
+import re
+from typing import Optional
 
 
 system_prompt = """You are a mathematics reasoning assistant. Your job is to solve math problems correctly and clearly.
@@ -34,6 +36,15 @@ Problem-solving procedure (follow internally, but show the result as steps):
 
 system_prompt_message = {"role": "system", "content": system_prompt}
 
+def parse_after_hashes(text: str) -> Optional[str]:
+    """
+    Returns the content after a line starting with '####'.
+    Example: '#### 624' -> '624'
+    Returns None if no such line exists.
+    """
+    m = re.search(r"(?m)^\s*####\s*(.*)$", text)
+    return m.group(1).strip() if m else None
+
 class MathsDataset(Dataset):
     def __init__(self, ds):
         self.ds = ds
@@ -51,10 +62,11 @@ class MathsDataset(Dataset):
     
     def __getitem__(self, idx):
         item = self.ds[idx]
-        problem = item["problem"]
+        problem = item["question"]
         answer = item["answer"]
-        self.redis.set(f"correct_answer:{idx}", answer)
-        return idx, problem, answer
+        parsed_answer = parse_after_hashes(answer)
+        self.redis.set(f"correct_answer:{idx}", parsed_answer)
+        return idx, problem, parsed_answer
     
     def __next__(self):
         if self._idx >= len(self):

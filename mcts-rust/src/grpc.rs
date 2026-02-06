@@ -61,8 +61,10 @@ impl InferenceClientPool {
         worker_pool_id: u32,
     ) -> Result<Response<GetPromptResponse>> {
         let mut client = self.get_random_client().await?;
+        let mut request = Request::new(GetPromptRequest { worker_pool_id });
+        request.set_timeout(std::time::Duration::from_secs(30));
         let response = client
-            .get_prompt(GetPromptRequest { worker_pool_id })
+            .get_prompt(request)
             .await?;
         Ok(response)
     }
@@ -73,13 +75,14 @@ impl InferenceClientPool {
         prompt_id: u32,
         state: Vec<u64>,
     ) -> Result<Response<GraderResponse>> {
-        let grader_request = GraderRequest {
+        let mut request = Request::new(GraderRequest {
             episode_id,
             prompt_id,
             state,
-        };
+        });
+        request.set_timeout(std::time::Duration::from_secs(30));
         let mut client = self.get_random_client().await?;
-        let response = client.grader(grader_request).await?;
+        let response = client.grader(request).await?;
         Ok(response)
     }
 

@@ -321,7 +321,8 @@ impl Tree {
                             if child_id != EXPANDING_NODE {
                                 return Ok(child_id);
                             }
-                            std::hint::spin_loop();
+                            // std::hint::spin_loop();
+                            tokio::task::yield_now().await;
                         }
                     }
                 }

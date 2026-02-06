@@ -28,6 +28,8 @@ from data import MathsDataset, system_prompt_message
 from datasets import load_dataset
 from train import value_path, policy_path
 
+# dataset = "POLARIS-Project/Polaris-Dataset-53K"
+dataset = "openai/gsm8k"
 
 class BatchInferenceService:
     def __init__(self, rank: int, config: dict):
@@ -185,7 +187,7 @@ class InferenceServicer(inference_pb2_grpc.InferenceServicer):
     def __init__(self, batch_inference_service: BatchInferenceService):
         self.batch_inference_service = batch_inference_service
         self.graders = Graders()
-        self.maths_dataset = MathsDataset(load_dataset("POLARIS-Project/Polaris-Dataset-53K", split="train"))
+        self.maths_dataset = MathsDataset(load_dataset(dataset, "main", split="train"))
 
     def infer(self, request : InferenceRequest, context):
         fut = Future()
