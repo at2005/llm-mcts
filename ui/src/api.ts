@@ -2,7 +2,16 @@ import { TreeSnapshot } from "./types";
 
 function getApiBase(): string {
   const value = import.meta.env.VITE_MCTS_API_BASE as string | undefined;
-  return (value ?? "").trim().replace(/\/$/, "");
+  const explicit = (value ?? "").trim().replace(/\/$/, "");
+  if (explicit) {
+    return explicit;
+  }
+
+  if (typeof window !== "undefined" && window.location.port === "5173") {
+    return `${window.location.protocol}//${window.location.hostname}:3001`;
+  }
+
+  return "";
 }
 
 function apiUrl(path: string): string {

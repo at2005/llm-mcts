@@ -100,7 +100,11 @@ export default function App() {
 
     const wsProtocol = window.location.protocol === "https:" ? "wss" : "ws";
     const wsOverride = (import.meta.env.VITE_MCTS_WS_URL as string | undefined)?.trim();
-    const wsUrl = wsOverride || `${wsProtocol}://${window.location.host}/ws`;
+    const defaultWsUrl =
+      window.location.port === "5173"
+        ? `${wsProtocol}://${window.location.hostname}:3001/ws`
+        : `${wsProtocol}://${window.location.host}/ws`;
+    const wsUrl = wsOverride || defaultWsUrl;
 
     const scheduleReconnect = () => {
       if (!active || reconnectTimer) {
