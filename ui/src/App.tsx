@@ -53,6 +53,35 @@ export default function App() {
 
   useEffect(() => {
     let active = true;
+    let socket: WebSocket | null = null;
+    let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+    let connectTimeout: ReturnType<typeof setTimeout> | null = null;
+    let reconnectDelayMs = 1000;
+
+    const clearReconnectTimer = () => {
+      if (!reconnectTimer) {
+        return;
+      }
+      clearTimeout(reconnectTimer);
+      reconnectTimer = null;
+    };
+
+    const clearConnectTimeout = () => {
+      if (!connectTimeout) {
+        return;
+      }
+      clearTimeout(connectTimeout);
+      connectTimeout = null;
+    };
+
+    const applySnapshot = (snapshot: { workers: WorkerTree[]; workerIds: string[] }) => {
+      const nextWorkerTrees = toWorkerMap(snapshot.workers);
+      const nextWorkerIds = snapshot.workerIds.length > 0 ? snapshot.workerIds : Object.keys(nextWorkerTrees).sort();
+
+      setWorkerTrees(nextWorkerTrees);
+      setWorkerIds(nextWorkerIds);
+      setSelectedWorkerId((prev) => (prev && nextWorkerIds.includes(prev) ? prev : nextWorkerIds[0] ?? null));
+    };
 
     fetchTreeSnapshot()
       .then((snapshot) => {
@@ -60,12 +89,7 @@ export default function App() {
           return;
         }
 
-        const nextWorkerTrees = toWorkerMap(snapshot.workers);
-        const nextWorkerIds = snapshot.workerIds.length > 0 ? snapshot.workerIds : Object.keys(nextWorkerTrees).sort();
-
-        setWorkerTrees(nextWorkerTrees);
-        setWorkerIds(nextWorkerIds);
-        setSelectedWorkerId((prev) => (prev && nextWorkerIds.includes(prev) ? prev : nextWorkerIds[0] ?? null));
+        applySnapshot(snapshot);
       })
       .catch((cause) => {
         if (!active) {
@@ -76,110 +100,172 @@ export default function App() {
 
     const wsProtocol = window.location.protocol === "https:" ? "wss" : "ws";
     const wsOverride = (import.meta.env.VITE_MCTS_WS_URL as string | undefined)?.trim();
-    const socket = new WebSocket(wsOverride || `${wsProtocol}://${window.location.host}/ws`);
+    const wsUrl = wsOverride || `${wsProtocol}://${window.location.host}/ws`;
 
-    socket.onopen = () => {
-      if (active) {
-        setSocketState("live");
+    const scheduleReconnect = () => {
+      if (!active || reconnectTimer) {
+        return;
       }
+
+      setSocketState("connecting");
+      reconnectTimer = setTimeout(() => {
+        reconnectTimer = null;
+        connect();
+      }, reconnectDelayMs);
+      reconnectDelayMs = Math.min(reconnectDelayMs * 2, 15_000);
     };
 
-    socket.onclose = () => {
-      if (active) {
-        setSocketState("offline");
-      }
-    };
-
-    socket.onerror = () => {
-      if (active) {
-        setSocketState("offline");
-      }
-    };
-
-    socket.onmessage = (event) => {
+    const connect = () => {
       if (!active) {
         return;
       }
 
-      try {
-        const message = JSON.parse(event.data) as WsMessage;
-
-        if (message.type === "tree_snapshot") {
-          const nextWorkerTrees = toWorkerMap(message.workers);
-          const nextWorkerIds = message.workerIds.length > 0 ? message.workerIds : Object.keys(nextWorkerTrees).sort();
-
-          setWorkerTrees(nextWorkerTrees);
-          setWorkerIds(nextWorkerIds);
-          setSelectedWorkerId((prev) => (prev && nextWorkerIds.includes(prev) ? prev : nextWorkerIds[0] ?? null));
-          setSelectedNodeId(null);
-          return;
-        }
-
-        if (message.type === "node_added") {
-          setWorkerTrees((prev) => {
-            const current = prev[message.workerId] ?? { nodes: [], edges: [] };
-            const nextEdges = message.edge ? dedupeEdges([...current.edges, message.edge]) : current.edges;
-
-            return {
-              ...prev,
-              [message.workerId]: {
-                nodes: dedupeNodes([...current.nodes, message.node]),
-                edges: nextEdges
-              }
-            };
-          });
-
-          setWorkerIds((prev) => {
-            if (prev.includes(message.workerId)) {
-              return prev;
-            }
-            return [...prev, message.workerId].sort();
-          });
-
-          setSelectedWorkerId((prev) => prev ?? message.workerId);
-          return;
-        }
-
-        if (message.type === "tree_reset") {
-          setWorkerTrees({});
-          setWorkerIds([]);
-          setSelectedWorkerId(null);
-          setSelectedNodeId(null);
-          return;
-        }
-
-        if (message.type === "worker_tree_reset") {
-          setWorkerTrees((prev) => {
-            if (!(message.workerId in prev)) {
-              return prev;
-            }
-
-            const next = { ...prev };
-            delete next[message.workerId];
-            return next;
-          });
-
-          setWorkerIds((prev) => {
-            const nextWorkerIds = prev.filter((workerId) => workerId !== message.workerId);
-            setSelectedWorkerId((current) => {
-              if (current && nextWorkerIds.includes(current)) {
-                return current;
-              }
-              return nextWorkerIds[0] ?? null;
-            });
-            return nextWorkerIds;
-          });
-
-          setSelectedNodeId(null);
-        }
-      } catch (cause) {
-        setError(cause instanceof Error ? cause.message : "Failed to parse websocket payload");
+      if (socket && (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING)) {
+        return;
       }
+
+      setSocketState("connecting");
+      const ws = new WebSocket(wsUrl);
+      socket = ws;
+
+      clearConnectTimeout();
+      connectTimeout = setTimeout(() => {
+        if (socket === ws && ws.readyState === WebSocket.CONNECTING) {
+          ws.close();
+        }
+      }, 8_000);
+
+      ws.onopen = () => {
+        if (!active || socket !== ws) {
+          return;
+        }
+
+        clearConnectTimeout();
+        clearReconnectTimer();
+        reconnectDelayMs = 1000;
+        setSocketState("live");
+      };
+
+      ws.onclose = () => {
+        if (!active || socket !== ws) {
+          return;
+        }
+
+        clearConnectTimeout();
+        socket = null;
+        setSocketState("offline");
+        scheduleReconnect();
+      };
+
+      ws.onerror = () => {
+        if (!active || socket !== ws) {
+          return;
+        }
+
+        ws.close();
+      };
+
+      ws.onmessage = (event) => {
+        if (!active || socket !== ws) {
+          return;
+        }
+
+        try {
+          const message = JSON.parse(event.data) as WsMessage;
+
+          if (message.type === "tree_snapshot") {
+            applySnapshot(message);
+            setSelectedNodeId(null);
+            return;
+          }
+
+          if (message.type === "node_added") {
+            setWorkerTrees((prev) => {
+              const current = prev[message.workerId] ?? { nodes: [], edges: [] };
+              const nextEdges = message.edge ? dedupeEdges([...current.edges, message.edge]) : current.edges;
+
+              return {
+                ...prev,
+                [message.workerId]: {
+                  nodes: dedupeNodes([...current.nodes, message.node]),
+                  edges: nextEdges
+                }
+              };
+            });
+
+            setWorkerIds((prev) => {
+              if (prev.includes(message.workerId)) {
+                return prev;
+              }
+              return [...prev, message.workerId].sort();
+            });
+
+            setSelectedWorkerId((prev) => prev ?? message.workerId);
+            return;
+          }
+
+          if (message.type === "tree_reset") {
+            setWorkerTrees({});
+            setWorkerIds([]);
+            setSelectedWorkerId(null);
+            setSelectedNodeId(null);
+            return;
+          }
+
+          if (message.type === "worker_tree_reset") {
+            setWorkerTrees((prev) => {
+              if (!(message.workerId in prev)) {
+                return prev;
+              }
+
+              const next = { ...prev };
+              delete next[message.workerId];
+              return next;
+            });
+
+            setWorkerIds((prev) => {
+              const nextWorkerIds = prev.filter((workerId) => workerId !== message.workerId);
+              setSelectedWorkerId((current) => {
+                if (current && nextWorkerIds.includes(current)) {
+                  return current;
+                }
+                return nextWorkerIds[0] ?? null;
+              });
+              return nextWorkerIds;
+            });
+
+            setSelectedNodeId(null);
+          }
+        } catch (cause) {
+          setError(cause instanceof Error ? cause.message : "Failed to parse websocket payload");
+        }
+      };
     };
+
+    const handleOnline = () => {
+      if (!active) {
+        return;
+      }
+
+      reconnectDelayMs = 1000;
+      clearReconnectTimer();
+      if (socket && (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING)) {
+        return;
+      }
+      connect();
+    };
+
+    window.addEventListener("online", handleOnline);
+    connect();
 
     return () => {
       active = false;
-      socket.close();
+      window.removeEventListener("online", handleOnline);
+      clearReconnectTimer();
+      clearConnectTimeout();
+      if (socket && (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING)) {
+        socket.close();
+      }
     };
   }, []);
 
