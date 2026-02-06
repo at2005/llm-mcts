@@ -5,7 +5,8 @@ import ReactFlow, {
   Edge,
   MiniMap,
   Node,
-  NodeMouseHandler
+  NodeMouseHandler,
+  ReactFlowInstance
 } from "reactflow";
 import { fetchTreeSnapshot, resetTree, resetWorkerTree } from "./api";
 import { layoutElements } from "./layout";
@@ -50,6 +51,8 @@ export default function App() {
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [socketState, setSocketState] = useState<"connecting" | "live" | "offline">("connecting");
+  const [flowInstance, setFlowInstance] = useState<ReactFlowInstance | null>(null);
+  const [autoFitEnabled, setAutoFitEnabled] = useState(true);
 
   useEffect(() => {
     let active = true;
@@ -350,6 +353,23 @@ export default function App() {
     return layoutElements(flowNodes, flowEdges);
   }, [flowEdges, flowNodes]);
 
+  useEffect(() => {
+    if (!autoFitEnabled || !flowInstance || layoutedNodes.length === 0) {
+      return;
+    }
+
+    const timer = setTimeout(() => {
+      flowInstance.fitView({
+        padding: 0.2,
+        includeHiddenNodes: true,
+        minZoom: 0.01,
+        duration: 180
+      });
+    }, 40);
+
+    return () => clearTimeout(timer);
+  }, [autoFitEnabled, flowInstance, layoutedEdges.length, layoutedNodes.length, selectedWorkerId]);
+
   const onNodeClick: NodeMouseHandler = (_event, node) => {
     setSelectedNodeId(node.id);
   };
@@ -383,6 +403,14 @@ export default function App() {
           <div className={`status status-${socketState}`}>{socketState}</div>
           <button
             type="button"
+            onClick={() => {
+              setAutoFitEnabled((prev) => !prev);
+            }}
+          >
+            {autoFitEnabled ? "Auto Fit: On" : "Auto Fit: Off"}
+          </button>
+          <button
+            type="button"
             disabled={!selectedWorkerId}
             onClick={() => {
               if (!selectedWorkerId) {
@@ -410,9 +438,11 @@ export default function App() {
 
         <div className="canvas-wrap">
           <ReactFlow
+            onInit={setFlowInstance}
             nodes={layoutedNodes}
             edges={layoutedEdges}
             fitView
+            onlyRenderVisibleElements={false}
             onNodeClick={onNodeClick}
             onPaneClick={() => setSelectedNodeId(null)}
             proOptions={{ hideAttribution: true }}
