@@ -337,7 +337,6 @@ impl Tree {
 
 pub async fn mcts(tree: &Tree) -> Result<()> {
     let mut iterations = 0;
-    let mut eos_encountered = false;
 
     while iterations < tree.config.max_mcts_iterations {
         let mut node = 0;
@@ -355,10 +354,6 @@ pub async fn mcts(tree: &Tree) -> Result<()> {
             let edge_idx = tree.select(node_obj, &expansion, false)?;
             let edge = &expansion.edges[edge_idx];
 
-            if edge.contents.last().expect("State is empty") == &tree.config.eos_token_id {
-                eos_encountered = true;
-                break;
-            }
 
             let child_id = edge.child_id.load(Ordering::Acquire);
 
@@ -375,7 +370,8 @@ pub async fn mcts(tree: &Tree) -> Result<()> {
 
         let node_obj = tree.get_node(node);
 
-        if eos_encountered {
+        if node_obj.state.last().expect("State is empty") == &tree.config.eos_token_id {
+            info!("EOS encountered");
             let state = node_obj.state.iter().copied().collect::<Vec<_>>();
             let reward = tree
                 .inference_client_pool
@@ -407,7 +403,8 @@ pub async fn greedy_select(con: &mut ConnectionManager, tree: &Tree) -> Result<V
         let edge = &expansion.edges[edge_idx];
         node = edge.child_id.load(Ordering::Relaxed);
         nodes.push(node);
-        if edge.contents.last().expect("State is empty") == &tree.config.eos_token_id {
+        let node_obj = tree.get_node(node);
+        if node_obj.state.last().expect("State is empty") == &tree.config.eos_token_id {
             break;
         }
     }

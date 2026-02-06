@@ -19,7 +19,7 @@
     "max_mcts_iterations": 100,
     "c_puct": 0.8,
     "virtual_loss": 1,
-    "eos_token_id": 128001,
+    "eos_token_id": 128009,
     "sampling_temperature": 0.8,
     "stop_phrase": "<|end_step|>",
     "c_value_loss": 1.0,
