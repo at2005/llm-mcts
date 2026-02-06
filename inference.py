@@ -137,12 +137,15 @@ class BatchInferenceService:
             # [batch_size * N] -> [batch_size, N]
             grouped_summed_logprobs = summed_logprobs.reshape(-1, N) # [batch_size, N]
 
+            # softmax across the N dimension
+            grouped_summed_logprobs = F.softmax(grouped_summed_logprobs, dim=-1)
+
             grouped_generated_ids = [generated_ids[i:i+N] for i in range(0, len(generated_ids), N)] # [batch_size, N]
 
             values : torch.Tensor = self.value_head(last_hidden_state).squeeze(-1) # [batch_size]
             grouped_values = values.reshape(-1, N).mean(dim=-1) # [batch_size]
 
-        return (grouped_generated_ids, grouped_summed_logprobs.exp().cpu().tolist(), grouped_values.cpu().tolist())
+        return (grouped_generated_ids, grouped_summed_logprobs.cpu().tolist(), grouped_values.cpu().tolist())
 
 
     def batch_worker(self):
