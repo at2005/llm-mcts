@@ -154,7 +154,12 @@ pub struct Tree {
 }
 
 impl Tree {
-    pub async fn new(episode_id: u32, prompt_id: u32, config: ExperimentConfig) -> Result<Self> {
+    pub async fn new(
+        episode_id: u32,
+        prompt_id: u32,
+        config: ExperimentConfig,
+        worker_id: u32,
+    ) -> Result<Self> {
         let inference_client_pool =
             InferenceClientPool::new(config.num_inference_gpus as usize).await?;
         let mut nodes = Vec::with_capacity(MAX_NODES);
@@ -167,7 +172,7 @@ impl Tree {
             episode_id,
             prompt_id,
             config,
-            logger: Logger::new(None)?,
+            logger: Logger::new(None, worker_id)?,
         })
     }
 
@@ -435,7 +440,7 @@ pub async fn spawn_mcts_workers(
         if iters > max_samples {
             return Ok(());
         }
-        let mut tree = Tree::new(0, 0, config.clone()).await?;
+        let mut tree = Tree::new(0, 0, config.clone(), worker_pool_id).await?;
         let state = tree
             .inference_client_pool
             .send_get_prompt_request(worker_pool_id)
@@ -473,6 +478,7 @@ pub async fn spawn_mcts_workers(
         )?;
         let mut con = client.get_connection_manager().await?;
         greedy_select(&mut con, &tree).await?;
+        tree.logger.reset_tree().await?;
         iters += 1;
     }
 }

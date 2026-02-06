@@ -53,6 +53,24 @@ body {
   letter-spacing: 0.01em;
 }
 
+.worker-picker {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.worker-picker select {
+  border: 1px solid var(--line);
+  background: var(--panel);
+  color: var(--text);
+  border-radius: 8px;
+  padding: 4px 8px;
+  min-width: 120px;
+}
+
 .toolbar button {
   border: 1px solid var(--line);
   background: var(--panel);

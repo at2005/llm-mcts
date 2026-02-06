@@ -28,3 +28,13 @@ export async function resetTree(): Promise<void> {
     throw new Error(`Failed to reset tree: ${response.status}`);
   }
 }
+
+export async function resetWorkerTree(workerId: string): Promise<void> {
+  const response = await fetch(apiUrl(`/api/reset-tree/${encodeURIComponent(workerId)}`), {
+    method: "POST"
+  });
+
+  if (!response.ok) {
+    throw new Error(`Failed to reset worker tree '${workerId}': ${response.status}`);
+  }
+}

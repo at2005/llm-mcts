@@ -68,13 +68,14 @@ function isNodePayload(value: unknown): value is NodePayload {
   }
 
   const candidate = value as Partial<NodePayload>;
+  const hasWorkerId = isNodeIdLike(candidate.workerId);
   const hasId = isNodeIdLike(candidate.id);
   const hasParent = candidate.parentId === null || isNodeIdLike(candidate.parentId);
   const hasContents = isIntegerArray(candidate.contents);
   const hasVisits = isFiniteNumber(candidate.visits);
   const hasValue = isFiniteNumber(candidate.value);
 
-  return hasId && hasParent && hasContents && hasVisits && hasValue;
+  return hasWorkerId && hasId && hasParent && hasContents && hasVisits && hasValue;
 }
 
 async function start() {
@@ -109,41 +110,64 @@ async function start() {
   app.post("/api/nodes", (req, res) => {
     if (!isNodePayload(req.body)) {
       res.status(400).json({
-        error: "Invalid payload. Required: { id, parentId, contents: integer[], visits: number, value: number }"
+        error: "Invalid payload. Required: { workerId, id, parentId, contents: integer[], visits: number, value: number }"
       });
       return;
     }
 
     const payload = req.body;
+    const workerId = normalizeNodeId(payload.workerId);
     const nodeId = normalizeNodeId(payload.id);
 
-    if (store.getNode(nodeId)) {
-      res.status(409).json({ error: `Node '${nodeId}' already exists.` });
+    if (store.getNode(workerId, nodeId)) {
+      res.status(409).json({ error: `Node '${nodeId}' already exists for worker '${workerId}'.` });
       return;
     }
 
     const parentRaw = payload.parentId;
     const parentId = isRootParentId(parentRaw) ? null : normalizeNodeId(parentRaw as string | number);
-    const parent = parentId ? store.getNode(parentId) : undefined;
+    const parent = parentId ? store.getNode(workerId, parentId) : undefined;
     if (parentId && !parent) {
-      res.status(404).json({ error: `Parent node '${parentId}' not found.` });
+      res.status(404).json({ error: `Parent node '${parentId}' not found for worker '${workerId}'.` });
       return;
     }
 
     const decodedState = decodeTokens(tokenizer, payload.contents);
-    const savedNode = store.addNode({ ...payload, id: nodeId, parentId }, decodedState);
+    const savedNode = store.addNode({ ...payload, workerId, id: nodeId, parentId }, decodedState);
     const edge = savedNode.parentId ? store.buildEdge(savedNode.parentId, savedNode.id) : null;
 
-    broadcast({ type: "node_added", node: savedNode, edge });
+    broadcast({ type: "node_added", workerId, node: savedNode, edge });
 
     res.status(201).json({ node: savedNode, edge });
   });
 
-  app.post("/api/reset", (_req, res) => {
+  const handleReset = (_req: express.Request, res: express.Response) => {
     store.reset();
     broadcast({ type: "tree_reset" });
     res.status(204).send();
-  });
+  };
+
+  const handleResetWorker = (req: express.Request, res: express.Response) => {
+    const workerParam = req.params.workerId?.trim();
+    if (!workerParam) {
+      res.status(400).json({ error: "workerId path parameter is required." });
+      return;
+    }
+
+    const removed = store.resetWorker(workerParam);
+    if (!removed) {
+      res.status(404).json({ error: `Worker '${workerParam}' not found.` });
+      return;
+    }
+
+    broadcast({ type: "worker_tree_reset", workerId: workerParam });
+    res.status(204).send();
+  };
+
+  app.post("/api/reset", handleReset);
+  app.post("/api/reset-tree", handleReset);
+  app.post("/api/reset-tree/:workerId", handleResetWorker);
+  app.post("/api/workers/:workerId/reset", handleResetWorker);
 
   wss.on("connection", (socket) => {
     socket.send(

@@ -8,16 +8,18 @@ pub struct Logger {
     http_client: reqwest::Client,
     base_url: String,
     active: bool,
+    worker_id: u32,
 }
 
 impl Logger {
-    pub fn new(base_url: Option<String>) -> Result<Self> {
+    pub fn new(base_url: Option<String>, worker_id: u32) -> Result<Self> {
         let base_url = base_url.unwrap_or("http://localhost:3001".to_string());
         let http_client = Client::new();
         Ok(Self {
             http_client,
             base_url,
             active: true,
+            worker_id,
         })
     }
 
@@ -33,6 +35,29 @@ impl Logger {
         self.active
     }
 
+    pub async fn reset_tree(&self) -> Result<()> {
+        if !self.active {
+            return Ok(());
+        }
+
+        let response = self
+            .http_client
+            .post(format!(
+                "{}/api/reset-tree/{}",
+                self.base_url, self.worker_id
+            ))
+            .send()
+            .await?;
+        if !response.status().is_success() {
+            return Err(anyhow::anyhow!(
+                "Failed to reset tree: {}",
+                response.status()
+            ));
+        }
+
+        Ok(())
+    }
+
     pub async fn log_node(&self, node_id: NodeId, node: &Node) -> Result<()> {
         if !self.active {
             return Ok(());
@@ -44,6 +69,7 @@ impl Logger {
             "contents": node.state.iter().copied().collect::<Vec<_>>(),
             "visits": node.visits.load(Ordering::Relaxed),
             "value": node.accumulated_value.load(Ordering::Relaxed),
+            "workerId": self.worker_id,
         });
 
         let response = self

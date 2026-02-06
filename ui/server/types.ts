@@ -1,4 +1,5 @@
 export type NodePayload = {
+  workerId: string | number;
   id: string | number;
   parentId: string | number | null;
   contents: number[];
@@ -7,6 +8,7 @@ export type NodePayload = {
 };
 
 export type StoredNode = {
+  workerId: string;
   id: string;
   parentId: string | null;
   contents: number[];
@@ -24,7 +26,14 @@ export type EdgeRecord = {
   target: string;
 };
 
+export type WorkerTreeSnapshot = {
+  workerId: string;
+  nodes: PublicNode[];
+  edges: EdgeRecord[];
+};
+
 export type WsMessage =
-  | { type: "tree_snapshot"; nodes: PublicNode[]; edges: EdgeRecord[] }
-  | { type: "node_added"; node: PublicNode; edge: EdgeRecord | null }
+  | { type: "tree_snapshot"; workers: WorkerTreeSnapshot[]; workerIds: string[] }
+  | { type: "node_added"; workerId: string; node: PublicNode; edge: EdgeRecord | null }
+  | { type: "worker_tree_reset"; workerId: string }
   | { type: "tree_reset" };

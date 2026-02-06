@@ -53,6 +53,7 @@ Body:
 
 ```json
 {
+  "workerId": 0,
   "id": 12,
   "parentId": 3,
   "contents": [128000, 271, 9906],
@@ -63,15 +64,26 @@ Body:
 
 Rules:
 
+- `workerId` is required
 - `id` must be unique
+- `id` uniqueness is scoped per `workerId` (same node id can be reused across different workers)
 - root can be represented with `parentId = usize::MAX` (for Rust runners)
 - non-root `parentId` must already exist
 
 ### `GET /api/tree`
-Returns current nodes and edges.
+Returns worker-partitioned trees (`workers[]` plus `workerIds[]`).
 
 ### `POST /api/reset`
 Clears all nodes.
+
+### `POST /api/reset-tree`
+Alias for resetting all worker trees.
+
+### `POST /api/reset-tree/:workerId`
+Resets only one worker tree.
+
+### `POST /api/workers/:workerId/reset`
+Alternate path for resetting one worker tree.
 
 ### `GET /api/health`
 Health check endpoint.
@@ -81,9 +93,17 @@ Health check endpoint.
 ```bash
 curl -X POST http://localhost:3001/api/nodes \
   -H 'content-type: application/json' \
-  -d '{"id":0,"parentId":18446744073709551615,"contents":[128000,271],"visits":1,"value":0.0}'
+  -d '{"workerId":0,"id":0,"parentId":18446744073709551615,"contents":[128000,271],"visits":1,"value":0.0}'
 
 curl -X POST http://localhost:3001/api/nodes \
   -H 'content-type: application/json' \
-  -d '{"id":1,"parentId":0,"contents":[9906,374],"visits":3,"value":1.4}'
+  -d '{"workerId":0,"id":1,"parentId":0,"contents":[9906,374],"visits":3,"value":1.4}'
+
+curl -X POST http://localhost:3001/api/nodes \
+  -H 'content-type: application/json' \
+  -d '{"workerId":1,"id":0,"parentId":18446744073709551615,"contents":[128000,271],"visits":1,"value":0.0}'
+
+curl -X POST http://localhost:3001/api/reset-tree/1
+
+curl -X POST http://localhost:3001/api/workers/0/reset
 ```
