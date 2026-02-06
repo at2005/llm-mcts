@@ -362,8 +362,8 @@ export default function App() {
       flowInstance.fitView({
         padding: 0.2,
         includeHiddenNodes: true,
-        minZoom: 0.01,
-        duration: 180
+        minZoom: 0.0001,
+        duration: 0
       });
     }, 40);
 
@@ -442,6 +442,9 @@ export default function App() {
             nodes={layoutedNodes}
             edges={layoutedEdges}
             fitView
+            fitViewOptions={{ padding: 0.2, includeHiddenNodes: true, minZoom: 0.0001, maxZoom: 2 }}
+            minZoom={0.0001}
+            maxZoom={4}
             onlyRenderVisibleElements={false}
             onNodeClick={onNodeClick}
             onPaneClick={() => setSelectedNodeId(null)}
