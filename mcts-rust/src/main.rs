@@ -6,22 +6,23 @@ use tracing::{error, info};
 #[tokio::main]
 async fn main() -> Result<()> {
     tracing_subscriber::fmt::init();
-    let num_workers = std::env::var("BATCH_WORKER_SIZE")
-        .unwrap_or("1".to_string())
-        .parse::<usize>()
-        .unwrap();
-
-    info!("Starting {} MCTS worker pools", num_workers);
 
     info!("Loading config");
     let config = load_config()?;
     info!("Config loaded");
 
+    let num_workers = config.num_worker_groups as usize;
+    info!("Starting {} MCTS worker pools", num_workers);
+
     let handles = (0..num_workers)
         .map(|i| {
             let worker_pool_id = i as u32;
             info!("Spawning MCTS worker pool {}", worker_pool_id);
-            tokio::spawn(spawn_mcts_workers(worker_pool_id, 1000, config.clone()))
+            tokio::spawn(spawn_mcts_workers(
+                worker_pool_id,
+                config.max_mcts_iterations as usize,
+                config.clone(),
+            ))
         })
         .collect::<Vec<_>>();
     let results = futures::future::join_all(handles).await;
