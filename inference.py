@@ -237,7 +237,7 @@ def serve():
     threading.Thread(target=worker.batch_worker, daemon=True).start()
     threading.Thread(target=worker.weight_subscriber, daemon=True).start()
 
-    server = grpc.server(futures.ThreadPoolExecutor(max_workers=16))
+    server = grpc.server(futures.ThreadPoolExecutor(max_workers=256))
     inference_pb2_grpc.add_InferenceServicer_to_server(InferenceServicer(worker), server)
     server.add_insecure_port(f'[::]:{port}')
     server.start()

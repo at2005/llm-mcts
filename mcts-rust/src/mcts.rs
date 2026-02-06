@@ -380,6 +380,7 @@ pub async fn mcts(tree: &Tree) -> Result<()> {
                 .into_inner()
                 .reward;
             tree.backprop(node, reward)?;
+            iterations += 1;
             continue;
         }
 

@@ -7,10 +7,19 @@ class Graders:
 
     def maths_grader(self, string_state: str, prompt_id: int) -> float:
         # The decoded state contains the whole prompt + model output.
-        # Use the last answer block so we grade the generated final answer.
-        matches = re.findall(r"<answer>(.*?)</answer>", string_state, re.DOTALL)
+        # Extract only the last assistant turn to avoid matching <answer> tags
+        # in system instructions or earlier turns.
+        assistant_marker = "<|start_header_id|>assistant<|end_header_id|>"
+        last_assistant_idx = string_state.rfind(assistant_marker)
+        if last_assistant_idx != -1:
+            search_text = string_state[last_assistant_idx:]
+        else:
+            search_text = string_state
+
+        matches = re.findall(r"<answer>(.*?)</answer>", search_text, re.DOTALL)
         if not matches:
             raise ValueError("No <answer>...</answer> block found in grader input")
+
 
         answer = matches[-1].strip()
         try:
@@ -32,6 +41,9 @@ class Graders:
         else:
             correct_answer_str = str(correct_answer).strip()
 
+        print("Grading prompt: ", prompt_id)
+        print("Answer: ", answer)
+        print("Correct answer: ", correct_answer_str)
         if answer == correct_answer_str:
             return 1.0
         else:
