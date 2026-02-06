@@ -341,20 +341,25 @@ pub async fn mcts(tree: &Tree) -> Result<()> {
 
     while iterations < tree.config.max_mcts_iterations {
         let mut node = 0;
+        let mut eos_encountered = false;
 
         // select next action
         loop {
             let node_obj = tree.get_node(node);
-            let expansion = node_obj.ensure_expansion(tree).await?;
 
             // add virtual loss to node to discourage it from being selected again, for parallel mcts
             node_obj
                 .visits
                 .fetch_add(tree.config.virtual_loss, Ordering::Relaxed);
 
+            if node_obj.state.last().expect("State is empty") == &tree.config.eos_token_id {
+                eos_encountered = true;
+                break;
+            }
+
+            let expansion = node_obj.ensure_expansion(tree).await?;
             let edge_idx = tree.select(node_obj, &expansion, false)?;
             let edge = &expansion.edges[edge_idx];
-
 
             let child_id = edge.child_id.load(Ordering::Acquire);
 
@@ -371,7 +376,7 @@ pub async fn mcts(tree: &Tree) -> Result<()> {
 
         let node_obj = tree.get_node(node);
 
-        if node_obj.state.last().expect("State is empty") == &tree.config.eos_token_id {
+        if eos_encountered {
             info!("EOS encountered");
             let state = node_obj.state.iter().copied().collect::<Vec<_>>();
             let reward = tree

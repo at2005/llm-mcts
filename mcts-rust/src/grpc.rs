@@ -63,9 +63,7 @@ impl InferenceClientPool {
         let mut client = self.get_random_client().await?;
         let mut request = Request::new(GetPromptRequest { worker_pool_id });
         request.set_timeout(std::time::Duration::from_secs(30));
-        let response = client
-            .get_prompt(request)
-            .await?;
+        let response = client.get_prompt(request).await?;
         Ok(response)
     }
 
