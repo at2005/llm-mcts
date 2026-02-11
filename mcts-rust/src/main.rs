@@ -18,11 +18,7 @@ async fn main() -> Result<()> {
         .map(|i| {
             let worker_pool_id = i as u32;
             info!("Spawning MCTS worker pool {}", worker_pool_id);
-            tokio::spawn(spawn_mcts_workers(
-                worker_pool_id,
-                config.max_mcts_iterations as usize,
-                config.clone(),
-            ))
+            tokio::spawn(spawn_mcts_workers(worker_pool_id, config.clone()))
         })
         .collect::<Vec<_>>();
     let results = futures::future::join_all(handles).await;

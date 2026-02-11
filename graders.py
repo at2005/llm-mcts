@@ -1,6 +1,7 @@
 import re
 from redis import Redis
 
+
 class Graders:
     def __init__(self):
         self.redis = Redis(host="localhost", port=6379, db=0)
@@ -19,7 +20,6 @@ class Graders:
         matches = re.findall(r"<answer>(.*?)</answer>", search_text, re.DOTALL)
         if not matches:
             raise ValueError("No <answer>...</answer> block found in grader input")
-
 
         answer = matches[-1].strip()
         try:

@@ -4,47 +4,44 @@
 # source: inference.proto
 # Protobuf Python Version: 6.31.1
 """Generated protocol buffer code."""
+
 from google.protobuf import descriptor as _descriptor
 from google.protobuf import descriptor_pool as _descriptor_pool
 from google.protobuf import runtime_version as _runtime_version
 from google.protobuf import symbol_database as _symbol_database
 from google.protobuf.internal import builder as _builder
+
 _runtime_version.ValidateProtobufRuntimeVersion(
-    _runtime_version.Domain.PUBLIC,
-    6,
-    31,
-    1,
-    '',
-    'inference.proto'
+    _runtime_version.Domain.PUBLIC, 6, 31, 1, "", "inference.proto"
 )
 # @@protoc_insertion_point(imports)
 
 _sym_db = _symbol_database.Default()
 
 
-
-
-DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x0finference.proto\x12\tinference\"!\n\x10InferenceRequest\x12\r\n\x05state\x18\x01 \x03(\x04\"*\n\nPriorEntry\x12\r\n\x05state\x18\x01 \x03(\x04\x12\r\n\x05prior\x18\x02 \x01(\x02\"I\n\x11InferenceResponse\x12%\n\x06priors\x18\x01 \x03(\x0b\x32\x15.inference.PriorEntry\x12\r\n\x05value\x18\x02 \x01(\x02\"E\n\rGraderRequest\x12\r\n\x05state\x18\x01 \x03(\x04\x12\x12\n\nepisode_id\x18\x02 \x01(\r\x12\x11\n\tprompt_id\x18\x03 \x01(\r\" \n\x0eGraderResponse\x12\x0e\n\x06reward\x18\x01 \x01(\x02\"*\n\x10GetPromptRequest\x12\x16\n\x0eworker_pool_id\x18\x01 \x01(\r\"7\n\x11GetPromptResponse\x12\x11\n\tprompt_id\x18\x01 \x01(\r\x12\x0f\n\x07problem\x18\x02 \x03(\x04\x32\xd7\x01\n\tInference\x12\x42\n\x05infer\x12\x1b.inference.InferenceRequest\x1a\x1c.inference.InferenceResponse\x12=\n\x06grader\x12\x18.inference.GraderRequest\x1a\x19.inference.GraderResponse\x12G\n\nget_prompt\x12\x1b.inference.GetPromptRequest\x1a\x1c.inference.GetPromptResponseb\x06proto3')
+DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(
+    b'\n\x0finference.proto\x12\tinference"!\n\x10InferenceRequest\x12\r\n\x05state\x18\x01 \x03(\x04"*\n\nPriorEntry\x12\r\n\x05state\x18\x01 \x03(\x04\x12\r\n\x05prior\x18\x02 \x01(\x02"I\n\x11InferenceResponse\x12%\n\x06priors\x18\x01 \x03(\x0b\x32\x15.inference.PriorEntry\x12\r\n\x05value\x18\x02 \x01(\x02"E\n\rGraderRequest\x12\r\n\x05state\x18\x01 \x03(\x04\x12\x12\n\nepisode_id\x18\x02 \x01(\r\x12\x11\n\tprompt_id\x18\x03 \x01(\r" \n\x0eGraderResponse\x12\x0e\n\x06reward\x18\x01 \x01(\x02"*\n\x10GetPromptRequest\x12\x16\n\x0eworker_pool_id\x18\x01 \x01(\r"7\n\x11GetPromptResponse\x12\x11\n\tprompt_id\x18\x01 \x01(\r\x12\x0f\n\x07problem\x18\x02 \x03(\x04\x32\xd7\x01\n\tInference\x12\x42\n\x05infer\x12\x1b.inference.InferenceRequest\x1a\x1c.inference.InferenceResponse\x12=\n\x06grader\x12\x18.inference.GraderRequest\x1a\x19.inference.GraderResponse\x12G\n\nget_prompt\x12\x1b.inference.GetPromptRequest\x1a\x1c.inference.GetPromptResponseb\x06proto3'
+)
 
 _globals = globals()
 _builder.BuildMessageAndEnumDescriptors(DESCRIPTOR, _globals)
-_builder.BuildTopDescriptorsAndMessages(DESCRIPTOR, 'inference_pb2', _globals)
+_builder.BuildTopDescriptorsAndMessages(DESCRIPTOR, "inference_pb2", _globals)
 if not _descriptor._USE_C_DESCRIPTORS:
-  DESCRIPTOR._loaded_options = None
-  _globals['_INFERENCEREQUEST']._serialized_start=30
-  _globals['_INFERENCEREQUEST']._serialized_end=63
-  _globals['_PRIORENTRY']._serialized_start=65
-  _globals['_PRIORENTRY']._serialized_end=107
-  _globals['_INFERENCERESPONSE']._serialized_start=109
-  _globals['_INFERENCERESPONSE']._serialized_end=182
-  _globals['_GRADERREQUEST']._serialized_start=184
-  _globals['_GRADERREQUEST']._serialized_end=253
-  _globals['_GRADERRESPONSE']._serialized_start=255
-  _globals['_GRADERRESPONSE']._serialized_end=287
-  _globals['_GETPROMPTREQUEST']._serialized_start=289
-  _globals['_GETPROMPTREQUEST']._serialized_end=331
-  _globals['_GETPROMPTRESPONSE']._serialized_start=333
-  _globals['_GETPROMPTRESPONSE']._serialized_end=388
-  _globals['_INFERENCE']._serialized_start=391
-  _globals['_INFERENCE']._serialized_end=606
+    DESCRIPTOR._loaded_options = None
+    _globals["_INFERENCEREQUEST"]._serialized_start = 30
+    _globals["_INFERENCEREQUEST"]._serialized_end = 63
+    _globals["_PRIORENTRY"]._serialized_start = 65
+    _globals["_PRIORENTRY"]._serialized_end = 107
+    _globals["_INFERENCERESPONSE"]._serialized_start = 109
+    _globals["_INFERENCERESPONSE"]._serialized_end = 182
+    _globals["_GRADERREQUEST"]._serialized_start = 184
+    _globals["_GRADERREQUEST"]._serialized_end = 253
+    _globals["_GRADERRESPONSE"]._serialized_start = 255
+    _globals["_GRADERRESPONSE"]._serialized_end = 287
+    _globals["_GETPROMPTREQUEST"]._serialized_start = 289
+    _globals["_GETPROMPTREQUEST"]._serialized_end = 331
+    _globals["_GETPROMPTRESPONSE"]._serialized_start = 333
+    _globals["_GETPROMPTRESPONSE"]._serialized_end = 388
+    _globals["_INFERENCE"]._serialized_start = 391
+    _globals["_INFERENCE"]._serialized_end = 606
 # @@protoc_insertion_point(module_scope)

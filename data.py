@@ -4,7 +4,6 @@ from redis import Redis
 import re
 from typing import Optional
 
-
 system_prompt = """You are a mathematics reasoning assistant. Your job is to solve math problems correctly and clearly.
 
 OUTPUT FORMAT (strict):
@@ -36,6 +35,7 @@ Problem-solving procedure (follow internally, but show the result as steps):
 
 system_prompt_message = {"role": "system", "content": system_prompt}
 
+
 def parse_after_hashes(text: str) -> Optional[str]:
     """
     Returns the content after a line starting with '####'.
@@ -45,21 +45,22 @@ def parse_after_hashes(text: str) -> Optional[str]:
     m = re.search(r"(?m)^\s*####\s*(.*)$", text)
     return m.group(1).strip() if m else None
 
+
 class MathsDataset(Dataset):
     def __init__(self, ds):
         self.ds = ds
         self._redis = None
         self._idx = 0
-    
+
     @property
     def redis(self):
         if self._redis is None:
             self._redis = Redis(host="localhost", port=6379, db=0)
         return self._redis
-    
+
     def __len__(self):
         return len(self.ds)
-    
+
     def __getitem__(self, idx):
         item = self.ds[idx]
         problem = item["question"]
@@ -67,13 +68,13 @@ class MathsDataset(Dataset):
         parsed_answer = parse_after_hashes(answer)
         self.redis.set(f"correct_answer:{idx}", parsed_answer)
         return idx, problem, parsed_answer
-    
+
     def __next__(self):
         if self._idx >= len(self):
             self._idx = 0
         idx, problem, answer = self[self._idx]
         self._idx += 1
         return idx, problem, answer
-    
+
     def __iter__(self):
         return self

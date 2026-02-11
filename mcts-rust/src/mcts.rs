@@ -434,17 +434,14 @@ pub async fn greedy_select(con: &mut ConnectionManager, tree: &Tree) -> Result<V
     Ok(nodes)
 }
 
-pub async fn spawn_mcts_workers(
-    worker_pool_id: u32,
-    max_samples: usize,
-    config: ExperimentConfig,
-) -> Result<()> {
+pub async fn spawn_mcts_workers(worker_pool_id: u32, config: ExperimentConfig) -> Result<()> {
     let mut iters = 0;
     loop {
-        if iters > max_samples {
+        if iters >= config.max_samples_processed_per_worker as usize {
             return Ok(());
         }
         let mut tree = Tree::new(0, 0, config.clone(), worker_pool_id).await?;
+        tree.logger.reset_tree().await?;
         let state = tree
             .inference_client_pool
             .send_get_prompt_request(worker_pool_id)
@@ -482,7 +479,6 @@ pub async fn spawn_mcts_workers(
         )?;
         let mut con = client.get_connection_manager().await?;
         greedy_select(&mut con, &tree).await?;
-        tree.logger.reset_tree().await?;
         iters += 1;
     }
 }

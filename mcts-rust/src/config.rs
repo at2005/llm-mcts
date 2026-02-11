@@ -21,6 +21,7 @@ pub struct ExperimentConfig {
     pub num_workers_per_prompt: u32,
     pub num_worker_groups: u32,
     pub max_mcts_iterations: u32,
+    pub max_samples_processed_per_worker: u32,
     pub c_puct: f32,
     pub virtual_loss: u32,
     pub eos_token_id: u64,
