@@ -234,10 +234,6 @@ impl Tree {
                         .load(Ordering::Relaxed),
                 };
 
-                if greedy_selection {
-                    return a_value.partial_cmp(&b_value).expect("NaN");
-                }
-
                 let a_child_visits = match a_child_id {
                     NO_CHILD => 0,
                     EXPANDING_NODE => 0,
@@ -249,6 +245,10 @@ impl Tree {
                     EXPANDING_NODE => 0,
                     _ => self.get_node(b_child_id).visits.load(Ordering::Relaxed),
                 };
+
+                if greedy_selection {
+                    return a_child_visits.partial_cmp(&b_child_visits).expect("NaN");
+                }
 
                 let a_puct = self.puct(node_visits, a_value, a_child_visits, a.prior);
                 let b_puct = self.puct(node_visits, b_value, b_child_visits, b.prior);
@@ -405,8 +405,13 @@ pub async fn greedy_select(con: &mut ConnectionManager, tree: &Tree) -> Result<V
 
     // greedily select the best path
     while !tree.is_leaf(node)? {
-        let expansion = tree.get_node(node).ensure_expansion(tree).await?;
-        let edge_idx = tree.select(tree.get_node(node), &expansion, true)?;
+        let expansion = tree
+            .get_node(node)
+            .expansion
+            .get()
+            .expect("Expansion is not initialized");
+        let node_obj = tree.get_node(node);
+        let edge_idx = tree.select(node_obj, &expansion, true)?;
         let edge = &expansion.edges[edge_idx];
         node = edge.child_id.load(Ordering::Relaxed);
         nodes.push(node);
