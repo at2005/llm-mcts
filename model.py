@@ -8,7 +8,8 @@ class ValueHead(nn.Module):
     def __init__(self, hidden_size: int):
         super().__init__()
         self.head = nn.Sequential(
-            nn.Linear(hidden_size, hidden_size), nn.ReLU(), nn.Linear(hidden_size, 1)
+            nn.Linear(hidden_size, hidden_size), nn.ReLU(), nn.Linear(hidden_size, 1),
+            nn.Sigmoid()
         )
 
     def forward(self, hidden_states: torch.Tensor):
