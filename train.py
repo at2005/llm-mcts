@@ -49,6 +49,74 @@ def publish_weights(model: TrainingModel):
     redis.publish("weights:updates", json.dumps({"version": version}))
 
 
+def ppo_step(
+    input_ids: torch.Tensor,
+    targets: torch.Tensor,
+    reward: torch.Tensor,
+    attention_mask: torch.Tensor,
+    model: TrainingModel,
+    optimizer: torch.optim.Optimizer,
+    config: dict,
+):
+    epsilon = config["ppo_epsilon"]
+    c_value_loss = config["c_value_loss"]
+    c_policy_loss = config["c_policy_loss"]
+    num_ppo_inner_steps = config["num_ppo_inner_steps"]
+
+    with torch.no_grad():
+        logits, values = model(input_ids, attention_mask)
+        assert logits.dtype == torch.float32
+        log_probs = F.log_softmax(logits, dim=-1)
+        log_probs_selected = log_probs.gather(
+            dim=-1, index=targets.unsqueeze(-1)
+        ).squeeze(-1)
+
+        bool_mask = attention_mask.bool()
+        log_probs_selected = log_probs_selected * bool_mask
+        values_masked = values * bool_mask
+        advantage: torch.Tensor = reward.unsqueeze(-1) - values_masked  # [B, T]
+        denominator = bool_mask.sum(dim=1).clamp(min=1)  # [B]
+
+    for _ in range(num_ppo_inner_steps):
+        new_logits, new_values = model(input_ids, attention_mask)
+        new_log_probs = F.log_softmax(new_logits.to(torch.float32), dim=-1)
+        new_log_probs_selected = new_log_probs.gather(
+            dim=-1, index=targets.unsqueeze(-1)
+        ).squeeze(
+            -1
+        )  # [B, T]
+
+        new_log_probs_selected = new_log_probs_selected * bool_mask
+
+        log_ratio = new_log_probs_selected - log_probs_selected
+        ratio = torch.exp(log_ratio)
+        ratio_clipped = ratio.clip(1 - epsilon, 1 + epsilon)  # [B, T]
+
+        policy_loss: torch.Tensor = -torch.min(
+            ratio * advantage, ratio_clipped * advantage
+        )
+
+        policy_loss = (policy_loss * bool_mask).sum(dim=1) / denominator  # [B]
+
+        value_mse = (new_values - reward.unsqueeze(-1)) ** 2
+        value_loss = (value_mse * bool_mask).sum(dim=1) / denominator  # [B]
+
+        total_loss: torch.Tensor = (
+            c_value_loss * value_loss + c_policy_loss * policy_loss
+        )
+
+        wandb.log(
+            {
+                "loss/value_loss": value_loss.item(),
+                "loss/policy_loss": policy_loss.item(),
+                "loss/total_loss": total_loss.item(),
+            }
+        )
+
+        optimizer.zero_grad()
+        total_loss.backward()
+
+
 def train(rank: int):
     device = f"cuda:{rank}"
     model = TrainingModel(config).to(device)
@@ -93,40 +161,26 @@ def train(rank: int):
             state_batch.append(state)
 
         reward_batch_tensor = torch.stack(reward_batch).to(device)
-        
-        batch_tensor = model.tokenizer.pad({"input_ids" : state_batch}, padding=True, return_tensors="pt" )
+
+        batch_tensor = model.tokenizer.pad(
+            {"input_ids": state_batch}, padding=True, return_tensors="pt"
+        )
         state_batch_tensor = batch_tensor["input_ids"].to(device)
         attention_mask = batch_tensor["attention_mask"].to(device)
 
         input_ids = state_batch_tensor[:, :-1]
         targets = state_batch_tensor[:, 1:]
 
-        print(f"Rank {rank}: Input ids shape: {input_ids.shape}, Targets shape: {targets.shape}")
-
-        logits, values = model(input_ids, attention_mask)
-        print(f"Rank {rank}: Logits shape: {logits.shape}, Values shape: {values.shape}")
-        value_loss = F.mse_loss(values.to(torch.float32), reward_batch_tensor.to(torch.float32))
-        print(f"Rank {rank}: Value loss: {value_loss.item()}")
-
-        ce_loss = F.cross_entropy(
-            logits.to(torch.float32).view(-1, logits.size(-1)), targets.reshape(-1), ignore_index=pad_id
+        ppo_step(
+            input_ids,
+            targets,
+            reward_batch_tensor,
+            attention_mask,
+            model,
+            optimizer,
+            config,
         )
-        print(f"Rank {rank}: Cross entropy loss: {ce_loss.item()}")
 
-        total_loss: torch.Tensor = c_value_loss * value_loss + c_ce_loss * ce_loss
-        print(f"Rank {rank}: Total loss: {total_loss.item()}")
-
-        # wandb.log(
-        #     {
-        #         "loss/value_loss": value_loss.item(),
-        #         "loss/ce_loss": ce_loss.item(),
-        #         "loss/total_loss": total_loss.item(),
-        #     }
-        # )
-
-        total_loss.backward()
-        optimizer.step()
-        scheduler.step()
         global_step += 1
 
 

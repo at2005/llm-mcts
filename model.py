@@ -8,8 +8,10 @@ class ValueHead(nn.Module):
     def __init__(self, hidden_size: int):
         super().__init__()
         self.head = nn.Sequential(
-            nn.Linear(hidden_size, hidden_size), nn.ReLU(), nn.Linear(hidden_size, 1),
-            nn.Sigmoid()
+            nn.Linear(hidden_size, hidden_size),
+            nn.ReLU(),
+            nn.Linear(hidden_size, 1),
+            nn.Sigmoid(),
         )
 
     def forward(self, hidden_states: torch.Tensor):
@@ -27,7 +29,9 @@ class TrainingModel(nn.Module):
         self.value_head = ValueHead(self.config["hidden_size"])
 
     def forward(self, input_ids: torch.Tensor, attention_mask: torch.Tensor):
-        outputs = self.model(input_ids, attention_mask=attention_mask, output_hidden_states=True)
+        outputs = self.model(
+            input_ids, attention_mask=attention_mask, output_hidden_states=True
+        )
         last_tok_hidden_states: torch.Tensor = outputs.hidden_states[-1][
             :, -1:, :
         ]  # [batch_size, hidden_size]
