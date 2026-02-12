@@ -32,6 +32,15 @@ export type WorkerTreeSnapshot = {
   edges: EdgeRecord[];
 };
 
+export type WorkerTreeMetadata = {
+  workerId: string;
+  nodeCount: number;
+  edgeCount: number;
+  rootNodeIds: string[];
+  firstNodeAt: string | null;
+  latestNodeAt: string | null;
+};
+
 export type WsMessage =
   | { type: "tree_snapshot"; workers: WorkerTreeSnapshot[]; workerIds: string[] }
   | { type: "node_added"; workerId: string; node: PublicNode; edge: EdgeRecord | null }

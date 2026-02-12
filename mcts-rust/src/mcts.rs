@@ -256,6 +256,7 @@ impl Tree {
             })
             .expect("Failed to find best action")
             .0;
+
         Ok(edge_idx)
     }
 
@@ -275,11 +276,6 @@ impl Tree {
         }
 
         Ok(())
-    }
-
-    pub fn is_leaf(&self, node: NodeId) -> Result<bool> {
-        let node = self.get_node(node);
-        Ok(node.expansion.get().is_none())
     }
 
     pub fn build_new_state(&self, parent: NodeId, contents: Arc<[u64]>) -> Arc<[u64]> {
@@ -404,7 +400,7 @@ pub async fn greedy_select(con: &mut ConnectionManager, tree: &Tree) -> Result<V
     let mut node = 0;
 
     // greedily select the best path
-    while !tree.is_leaf(node)? {
+    loop {
         let expansion = tree
             .get_node(node)
             .expansion
@@ -413,7 +409,13 @@ pub async fn greedy_select(con: &mut ConnectionManager, tree: &Tree) -> Result<V
         let node_obj = tree.get_node(node);
         let edge_idx = tree.select(node_obj, &expansion, true)?;
         let edge = &expansion.edges[edge_idx];
-        node = edge.child_id.load(Ordering::Relaxed);
+        let new_node = edge.child_id.load(Ordering::Relaxed);
+
+        if new_node == NO_CHILD || new_node == EXPANDING_NODE {
+            break;
+        }
+
+        node = new_node;
         nodes.push(node);
         let node_obj = tree.get_node(node);
         if node_obj.state.last().expect("State is empty") == &tree.config.eos_token_id {
@@ -430,6 +432,7 @@ pub async fn greedy_select(con: &mut ConnectionManager, tree: &Tree) -> Result<V
         .await?;
 
     let reward = grader_response.into_inner().reward;
+    info!("Reward from grader for greedy selection: {}", reward);
 
     let replay_buffer_entry = ReplayBufferEntry::new(state, tree.prompt_id, reward);
     let serialized = serde_json::to_string(&replay_buffer_entry)
@@ -483,6 +486,7 @@ pub async fn spawn_mcts_workers(worker_pool_id: u32, config: ExperimentConfig) -
             format!("redis://{}:{}", config.redis_host, config.redis_port).as_str(),
         )?;
         let mut con = client.get_connection_manager().await?;
+        info!("Greedy selecting");
         greedy_select(&mut con, &tree).await?;
         iters += 1;
     }

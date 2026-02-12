@@ -73,6 +73,25 @@ Rules:
 ### `GET /api/tree`
 Returns worker-partitioned trees (`workers[]` plus `workerIds[]`).
 
+### `GET /api/tree/:workerId`
+Returns lightweight metadata for a single worker tree.
+
+- `200` when the worker tree exists
+- `404` when the worker tree does not exist
+
+Example response:
+
+```json
+{
+  "workerId": "0",
+  "nodeCount": 42,
+  "edgeCount": 41,
+  "rootNodeIds": ["0"],
+  "firstNodeAt": "2026-02-12T03:11:22.111Z",
+  "latestNodeAt": "2026-02-12T03:11:29.887Z"
+}
+```
+
 ### `POST /api/reset`
 Clears all nodes.
 

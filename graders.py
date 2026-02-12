@@ -19,7 +19,8 @@ class Graders:
 
         matches = re.findall(r"<answer>(.*?)</answer>", search_text, re.DOTALL)
         if not matches:
-            raise ValueError("No <answer>...</answer> block found in grader input")
+            return 0.0
+            #raise ValueError("No <answer>...</answer> block found in grader input")
 
         answer = matches[-1].strip()
         try:

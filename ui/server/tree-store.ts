@@ -1,4 +1,11 @@
-import { EdgeRecord, NodePayload, PublicNode, StoredNode, WorkerTreeSnapshot } from "./types";
+import {
+  EdgeRecord,
+  NodePayload,
+  PublicNode,
+  StoredNode,
+  WorkerTreeMetadata,
+  WorkerTreeSnapshot
+} from "./types";
 
 const EDGE_PREFIX = "edge";
 
@@ -20,6 +27,28 @@ export class TreeStore {
 
   getNode(workerId: string, nodeId: string): StoredNode | undefined {
     return this.workerTrees.get(workerId)?.get(nodeId);
+  }
+
+  getWorkerMetadata(workerId: string): WorkerTreeMetadata | null {
+    const workerTree = this.workerTrees.get(workerId);
+    if (!workerTree) {
+      return null;
+    }
+
+    const nodes = [...workerTree.values()];
+    const rootNodeIds = nodes.filter((node) => node.parentId === null).map((node) => node.id);
+    const timestamps = nodes.map((node) => Date.parse(node.createdAt)).filter(Number.isFinite);
+    const firstNodeAt = timestamps.length > 0 ? new Date(Math.min(...timestamps)).toISOString() : null;
+    const latestNodeAt = timestamps.length > 0 ? new Date(Math.max(...timestamps)).toISOString() : null;
+
+    return {
+      workerId,
+      nodeCount: nodes.length,
+      edgeCount: Math.max(0, nodes.length - rootNodeIds.length),
+      rootNodeIds,
+      firstNodeAt,
+      latestNodeAt
+    };
   }
 
   reset(): void {

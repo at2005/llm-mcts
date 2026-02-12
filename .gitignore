@@ -13,3 +13,4 @@ wheels/
 mcts-rust/target/
 
 logs/
+wandb/

@@ -3,6 +3,7 @@ use anyhow::Result;
 use reqwest::Client;
 use serde_json::json;
 use std::sync::atomic::Ordering;
+use tracing::info;
 
 pub struct Logger {
     http_client: reqwest::Client,
@@ -35,8 +36,30 @@ impl Logger {
         self.active
     }
 
+    pub async fn get_tree(&self) -> Result<()> {
+        if !self.active {
+            return Ok(());
+        }
+
+        let response = self
+            .http_client
+            .get(format!("{}/api/tree/{}", self.base_url, self.worker_id))
+            .send()
+            .await?;
+        if !response.status().is_success() {
+            return Err(anyhow::anyhow!("Failed to get tree: {}", response.status()));
+        }
+
+        Ok(())
+    }
+
     pub async fn reset_tree(&self) -> Result<()> {
         if !self.active {
+            return Ok(());
+        }
+
+        if self.get_tree().await.is_err() {
+            info!("Tree not found, skipping reset");
             return Ok(());
         }
 

@@ -107,6 +107,22 @@ async function start() {
     res.json(store.getSnapshot());
   });
 
+  app.get("/api/tree/:workerId", (req, res) => {
+    const workerId = req.params.workerId?.trim();
+    if (!workerId) {
+      res.status(400).json({ error: "workerId path parameter is required." });
+      return;
+    }
+
+    const metadata = store.getWorkerMetadata(workerId);
+    if (!metadata) {
+      res.status(404).json({ error: `Tree for worker '${workerId}' not found.` });
+      return;
+    }
+
+    res.json(metadata);
+  });
+
   app.post("/api/nodes", (req, res) => {
     if (!isNodePayload(req.body)) {
       res.status(400).json({
