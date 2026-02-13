@@ -28,14 +28,16 @@ pub struct ReplayBufferEntry {
     pub state: Vec<u64>,
     pub prompt_id: u32,
     pub reward: f32,
+    pub num_prompt_tokens: u32,
 }
 
 impl ReplayBufferEntry {
-    pub fn new(state: Vec<u64>, prompt_id: u32, reward: f32) -> Self {
+    pub fn new(state: Vec<u64>, prompt_id: u32, reward: f32, num_prompt_tokens: u32) -> Self {
         Self {
             state,
             prompt_id,
             reward,
+            num_prompt_tokens,
         }
     }
 }
@@ -399,6 +401,9 @@ pub async fn greedy_select(con: &mut ConnectionManager, tree: &Tree) -> Result<V
     let mut nodes = Vec::new();
     let mut node = 0;
 
+    // num tokens root state
+    let num_prompt_tokens = tree.get_node(node).state.len() as u32;
+
     // greedily select the best path
     loop {
         let expansion = tree
@@ -434,7 +439,8 @@ pub async fn greedy_select(con: &mut ConnectionManager, tree: &Tree) -> Result<V
     let reward = grader_response.into_inner().reward;
     info!("Reward from grader for greedy selection: {}", reward);
 
-    let replay_buffer_entry = ReplayBufferEntry::new(state, tree.prompt_id, reward);
+    let replay_buffer_entry =
+        ReplayBufferEntry::new(state, tree.prompt_id, reward, num_prompt_tokens);
     let serialized = serde_json::to_string(&replay_buffer_entry)
         .expect("Failed to serialize replay buffer entry");
     let _: () = con.lpush(REPLAY_BUFFER_KEY, serialized).await?;
