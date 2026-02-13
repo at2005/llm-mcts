@@ -9,8 +9,10 @@ import wandb
 
 
 def publish_weights(
-    redis: Redis, model: TrainingModel, value_path: str, policy_path: str
+    redis: Redis, model: TrainingModel, config: dict
 ):
+    value_path = config['value_head_path']
+    policy_path = config['policy_head_path']
     tmp_value_path = f"/tmp/{value_path}"
     tmp_policy_path = f"/tmp/{policy_path}"
 
@@ -131,9 +133,6 @@ def train(config: dict, redis: Redis, rank: int):
     train_batch_size = config["training_batch_size"]
     max_wait_ms = config["training_max_wait_ms"]
 
-    value_path = "value_head.pth"
-    policy_path = "llm.pth"
-
     optimizer = torch.optim.AdamW(model.parameters(), lr=config["learning_rate"])
 
     if model.tokenizer.pad_token is None:
@@ -144,7 +143,7 @@ def train(config: dict, redis: Redis, rank: int):
 
     while global_step < max_steps:
         if rank == 0 and (global_step + 1) % 10 == 0:
-            publish_weights(model, value_path, policy_path)
+            publish_weights(redis, model, config)
 
         reward_batch = []
         state_batch = []
@@ -177,7 +176,7 @@ def train(config: dict, redis: Redis, rank: int):
             generated_lengths_batch.append(num_generated_tokens)
 
         reward_batch_tensor = torch.stack(reward_batch).to(device)
-        generated_lengths_batch_tensor = torch.stack(generated_lengths_batch).to(
+        generated_lengths_batch_tensor = torch.tensor(generated_lengths_batch).to(
             device
         )  # [B]
 
@@ -210,4 +209,4 @@ if __name__ == "__main__":
     redis = Redis(
         host=config["redis_host"], port=config["redis_port"], db=config["redis_db"]
     )
-    train(config, redis, 7)
+    train(config, redis, 5)

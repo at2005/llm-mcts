@@ -27,7 +27,6 @@ from redis import Redis
 import json
 from data import MathsDataset, system_prompt_message
 from datasets import load_dataset
-from train import value_path, policy_path
 
 # dataset = "POLARIS-Project/Polaris-Dataset-53K"
 dataset = "openai/gsm8k"
@@ -67,6 +66,8 @@ class BatchInferenceService:
         self.stop_token_id = self.config["branch_token_id"]
 
     def sync_weights(self):
+        value_path = self.config['value_head_path']
+        policy_path = self.config['policy_head_path']
         if os.path.exists(value_path) and os.path.exists(policy_path):
             with self.weights_lock:
                 state_dict = torch.load(

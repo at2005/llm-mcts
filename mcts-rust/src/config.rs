@@ -28,9 +28,14 @@ pub struct ExperimentConfig {
     pub branch_token: String,
     pub branch_token_id: u64,
     pub c_value_loss: f32,
-    pub c_ce_loss: f32,
+    pub c_policy_loss: f32,
     pub training_max_wait_ms: u32,
     pub training_max_steps: u32,
+    pub value_head_path: String,
+    pub policy_head_path: String,
+    pub learning_rate: f32,
+    pub ppo_epsilon: f32,
+    pub num_ppo_inner_steps: u32,
 }
 
 pub fn load_config() -> Result<ExperimentConfig> {

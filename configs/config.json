@@ -6,7 +6,7 @@
     "inference_batch_size": 8,
     "training_batch_size": 2,
     "inference_max_wait_ms": 10000,
-    "num_inference_gpus": 7,
+    "num_inference_gpus": 5,
     "branch_token": "HIGH",
     "branch_token_id": 91319,
     "num_training_gpus": 1,
@@ -25,7 +25,12 @@
     "sampling_temperature": 0.8,
     "stop_phrase": "<|end_step|>",
     "c_value_loss": 1.0,
-    "c_ce_loss": 1.0,
+    "c_policy_loss": 1.0,
     "training_max_wait_ms": 100000,
-    "training_max_steps": 100000
+    "training_max_steps": 100000,
+    "value_head_path": "value_head.pth",
+    "policy_head_path": "llm.pth",
+    "learning_rate": 1e-4,
+    "ppo_epsilon": 0.1,
+    "num_ppo_inner_steps": 10
 }
