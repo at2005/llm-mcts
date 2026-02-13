@@ -105,8 +105,11 @@ def ppo_step(
         value_mse = (new_values - reward.unsqueeze(-1)) ** 2
         value_loss: torch.Tensor = value_mse.sum(dim=1) / denominator  # [B]
 
+        value_loss = value_loss.mean()
+        policy_loss = policy_loss.mean()
+
         total_loss: torch.Tensor = (
-            c_value_loss * value_loss.mean() + c_policy_loss * policy_loss.mean()
+            c_value_loss * value_loss + c_policy_loss * policy_loss
         )
 
         wandb.log(
