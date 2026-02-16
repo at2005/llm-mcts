@@ -267,7 +267,11 @@ class InferenceServicer(inference_pb2_grpc.InferenceServicer):
     def __init__(self, batch_inference_service: BatchInferenceService):
         self.batch_inference_service = batch_inference_service
         self.graders = Graders()
-        self.maths_dataset = MathsDataset(load_dataset(dataset, "main", split="train"))
+        dataset_seed = self.batch_inference_service.config.get("dataset_seed")
+        self.maths_dataset = MathsDataset(
+            load_dataset(dataset, "main", split="train"),
+            seed=dataset_seed,
+        )
 
     def infer(self, request: InferenceRequest, context):
         fut = Future()

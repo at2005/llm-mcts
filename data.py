@@ -36,7 +36,9 @@ def parse_after_hashes(text: str) -> Optional[str]:
 
 
 class MathsDataset(Dataset):
-    def __init__(self, ds):
+    def __init__(self, ds, seed: Optional[int] = None):
+        if seed is not None:
+            ds = ds.shuffle(seed=seed)
         self.ds = ds
         self._redis = None
         self._idx = 0
