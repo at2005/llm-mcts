@@ -14,6 +14,7 @@ pub struct ExperimentConfig {
     pub num_inference_gpus: u32,
     pub num_training_gpus: u32,
     pub inference_base_port: u32,
+    pub inference_start_rank: u32,
     pub redis_host: String,
     pub redis_port: u32,
     pub redis_db: u32,

@@ -44,9 +44,6 @@ class Graders:
         else:
             correct_answer_str = str(correct_answer).strip()
 
-        print("Grading prompt: ", prompt_id)
-        print("Answer: ", answer)
-        print("Correct answer: ", correct_answer_str)
         if answer == correct_answer_str:
             return self.positive_reward
         else:

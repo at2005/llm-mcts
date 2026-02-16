@@ -12,7 +12,7 @@ cleanup() {
 }
 trap cleanup INT TERM
 
-for i in $(seq 0 6); do
+for i in $(seq 4 7); do
   log="logs/rank_${i}.log"
   PYTHONUNBUFFERED=1 RANK="$i" uv run inference.py 2>&1 \
     | tee "$log" \

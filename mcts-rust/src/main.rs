@@ -16,6 +16,7 @@ async fn main() -> Result<()> {
     InferenceClientPool::wait_for_servers(
         config.num_inference_gpus as usize,
         config.inference_base_port as usize,
+        config.inference_start_rank as usize,
         Duration::from_secs(120),
     )
     .await?;

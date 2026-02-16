@@ -11,6 +11,10 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 from tqdm import trange
 import torch.distributed as dist
 
+def unwrap_model(model: torch.nn.Module) -> TrainingModel:
+    return model.module if isinstance(model, DDP) else model
+
+
 def resolve_weight_paths(config: dict) -> tuple[str, str]:
     local_dir = config.get("weights_local_dir", "/tmp/llm-mcts-weights")
     os.makedirs(local_dir, exist_ok=True)
@@ -20,8 +24,9 @@ def resolve_weight_paths(config: dict) -> tuple[str, str]:
 
 
 def publish_weights(
-    redis: Redis, model: TrainingModel, config: dict
+    redis: Redis, model: torch.nn.Module, config: dict
 ):
+    base_model = unwrap_model(model)
     value_path, policy_path = resolve_weight_paths(config)
     value_dir = os.path.dirname(os.path.abspath(value_path)) or "."
     tmp_value_path = os.path.join(
@@ -32,11 +37,11 @@ def publish_weights(
     backup_policy_dir = f"{policy_dir}.bak"
 
     with open(tmp_value_path, "wb") as f:
-        torch.save(model.value_head.state_dict(), f)
+        torch.save(base_model.value_head.state_dict(), f)
     if os.path.isdir(tmp_policy_dir):
         shutil.rmtree(tmp_policy_dir)
     os.makedirs(tmp_policy_dir, exist_ok=True)
-    model.model.save_pretrained(
+    base_model.model.save_pretrained(
         tmp_policy_dir, safe_serialization=True, max_shard_size="2GB"
     )
 
@@ -77,6 +82,7 @@ def ppo_step(
     model: TrainingModel,
     optimizer: torch.optim.Optimizer,
     config: dict,
+    log_metrics: bool,
 ):
     epsilon = config["ppo_epsilon"]
     c_value_loss = config["c_value_loss"]
@@ -107,7 +113,7 @@ def ppo_step(
         advantage = advantage - baseline
         advantage = advantage.masked_fill(~logit_mask, 0)
 
-    for _ in trange(num_ppo_inner_steps, desc="PPO inner steps"):
+    for _ in trange(num_ppo_inner_steps, desc="PPO inner steps", disable=not log_metrics):
         new_logits, new_values = model(input_ids, attention_mask)
         new_selected_logits = new_logits.gather(
             dim=-1, index=targets.unsqueeze(-1)
@@ -145,25 +151,27 @@ def ppo_step(
         total_loss.backward()
         grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), config["max_grad_norm"])
 
-        wandb.log(
-            {
-                "loss/value_loss": value_loss.item(),
-                "loss/policy_loss": policy_loss.item(),
-                "loss/total_loss": total_loss.item(),
-                "reward/mean": reward.mean().item(),
-                "grad/norm": grad_norm.item(),
-            }
-        )
+        if log_metrics:
+            wandb.log(
+                {
+                    "loss/value_loss": value_loss.item(),
+                    "loss/policy_loss": policy_loss.item(),
+                    "loss/total_loss": total_loss.item(),
+                    "reward/mean": reward.mean().item(),
+                    "grad/norm": grad_norm.item(),
+                }
+            )
         optimizer.step()
 
 
 def train(config: dict, redis: Redis, rank: int):
     device = f"cuda:{rank}"
-    model = TrainingModel(config).to(device)
-    model = DDP(model, device_ids=[rank])
+    base_model = TrainingModel(config).to(device)
+    tokenizer = base_model.tokenizer
+    model = DDP(base_model, device_ids=[rank])
     model.train()
-    model.tokenizer.pad_token = model.tokenizer.eos_token
-    model.tokenizer.padding_side = "left"
+    tokenizer.pad_token = tokenizer.eos_token
+    tokenizer.padding_side = "left"
 
     max_steps = config["training_max_steps"]
     train_batch_size = config["training_batch_size"]
@@ -172,88 +180,97 @@ def train(config: dict, redis: Redis, rank: int):
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=config["learning_rate"], fused=True)
 
-    if model.tokenizer.pad_token is None:
-        model.tokenizer.pad_token = model.tokenizer.eos_token
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
 
+    is_rank0 = rank == 0
     global_step = 0
-    wandb.init(project="mcts-language-model", name=f"train-rank-{rank}", config=config)
+    if is_rank0:
+        wandb.init(project="mcts-language-model", name="train-rank-0", config=config)
 
     stream_key = "replay_buffer"
     group_name = "trainers"
     consumer_name = f"consumer_{rank}"
+    if is_rank0:
+        try:
+            redis.xgroup_create(stream_key, group_name, id="0", mkstream=True)
+        except Exception:
+            print(f"Group {group_name} already exists")
+    dist.barrier()
+
     try:
-        redis.xgroup_create(stream_key, group_name, id="0", mkstream=True)
-    except Exception:
-        print(f"Group {group_name} already exists")
+        while global_step < max_steps:
+            if is_rank0 and (global_step + 1) % config["update_interval"] == 0:
+                publish_weights(redis, model, config)
 
-    while global_step < max_steps:
-        if (global_step + 1) % config["update_interval"] == 0:
-            publish_weights(redis, model, config)
+            reward_batch = []
+            state_batch = []
+            generated_lengths_batch = []
 
-        reward_batch = []
-        state_batch = []
-        generated_lengths_batch = []
+            deadline = time.monotonic() + (max_wait_ms / 1000.0)
 
-        deadline = time.monotonic() + (max_wait_ms / 1000.0)
+            while len(reward_batch) < train_batch_size:
+                timeout = deadline - time.monotonic()
+                if timeout <= 0 and len(reward_batch) > 0:
+                    break
 
-        while len(reward_batch) < train_batch_size:
-            timeout = deadline - time.monotonic()
-            if timeout <= 0 and len(reward_batch) > 0:
-                break
+                # print(f"Rank {rank}: Waiting for data from replay buffer")
+                resp = redis.xreadgroup(
+                    group_name, consumer_name,
+                    {stream_key: ">"},
+                    count=1,
+                    block=int(max(timeout * 1000, 10)),
+                )
+                if not resp:
+                    continue
 
-            # print(f"Rank {rank}: Waiting for data from replay buffer")
-            resp = redis.xreadgroup(
-                group_name, consumer_name,
-                {stream_key: ">"},
-                count=1,
-                block=int(max(timeout * 1000, 10)),
+                msg_id, fields = resp[0][1][0]
+                redis.xack(stream_key, group_name, msg_id)
+                data = json.loads(fields[b"data"])
+                state = data["state"]
+                reward = data["reward"]
+                num_prompt_tokens = data["num_prompt_tokens"]
+                num_generated_tokens = len(state) - num_prompt_tokens
+
+                if len(state) > max_train_seqlen:
+                    num_generated_tokens = max_train_seqlen - num_prompt_tokens
+                    state = state[:max_train_seqlen]
+
+                reward_batch.append(torch.tensor(reward, dtype=torch.bfloat16).to(device))
+                state_batch.append(state)
+                generated_lengths_batch.append(num_generated_tokens)
+
+            reward_batch_tensor = torch.stack(reward_batch).to(device)
+            generated_lengths_batch_tensor = torch.tensor(generated_lengths_batch).to(
+                device
+            )  # [B]
+
+            batch_tensor = tokenizer.pad(
+                {"input_ids": state_batch}, padding=True, return_tensors="pt"
             )
-            if not resp:
-                continue
+            state_batch_tensor = batch_tensor["input_ids"].to(device)
+            attention_mask = batch_tensor["attention_mask"].to(device)
 
-            msg_id, fields = resp[0][1][0]
-            redis.xack(stream_key, group_name, msg_id)
-            data = json.loads(fields[b"data"])
-            state = data["state"]
-            reward = data["reward"]
-            num_prompt_tokens = data["num_prompt_tokens"]
-            num_generated_tokens = len(state) - num_prompt_tokens
+            input_ids = state_batch_tensor[:, :-1]
+            targets = state_batch_tensor[:, 1:]
+            attention_mask = attention_mask[:, :-1]
 
-            if len(state) > max_train_seqlen:
-                num_generated_tokens = max_train_seqlen - num_prompt_tokens
-                state = state[:max_train_seqlen]
+            ppo_step(
+                input_ids,
+                targets,
+                reward_batch_tensor,
+                attention_mask,
+                generated_lengths_batch_tensor,
+                model,
+                optimizer,
+                config,
+                log_metrics=is_rank0,
+            )
 
-            reward_batch.append(torch.tensor(reward, dtype=torch.bfloat16).to(device))
-            state_batch.append(state)
-            generated_lengths_batch.append(num_generated_tokens)
-
-        reward_batch_tensor = torch.stack(reward_batch).to(device)
-        generated_lengths_batch_tensor = torch.tensor(generated_lengths_batch).to(
-            device
-        )  # [B]
-
-        batch_tensor = model.tokenizer.pad(
-            {"input_ids": state_batch}, padding=True, return_tensors="pt"
-        )
-        state_batch_tensor = batch_tensor["input_ids"].to(device)
-        attention_mask = batch_tensor["attention_mask"].to(device)
-
-        input_ids = state_batch_tensor[:, :-1]
-        targets = state_batch_tensor[:, 1:]
-        attention_mask = attention_mask[:, :-1]
-
-        ppo_step(
-            input_ids,
-            targets,
-            reward_batch_tensor,
-            attention_mask,
-            generated_lengths_batch_tensor,
-            model,
-            optimizer,
-            config,
-        )
-
-        global_step += 1
+            global_step += 1
+    finally:
+        if is_rank0:
+            wandb.finish()
 
 
 if __name__ == "__main__":

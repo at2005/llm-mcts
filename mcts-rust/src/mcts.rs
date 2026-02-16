@@ -165,6 +165,7 @@ impl Tree {
         let inference_client_pool = InferenceClientPool::new(
             config.num_inference_gpus as usize,
             config.inference_base_port as usize,
+            config.inference_start_rank as usize,
         )
         .await?;
         let mut nodes = Vec::with_capacity(MAX_NODES);
@@ -378,7 +379,6 @@ pub async fn mcts(tree: &Tree) -> Result<()> {
         let node_obj = tree.get_node(node);
 
         if eos_encountered {
-            info!("EOS encountered");
             let state = node_obj.state.iter().copied().collect::<Vec<_>>();
             let reward = tree
                 .inference_client_pool
@@ -446,7 +446,9 @@ pub async fn greedy_select(con: &mut ConnectionManager, tree: &Tree) -> Result<V
         ReplayBufferEntry::new(state, tree.prompt_id, reward, num_prompt_tokens);
     let serialized = serde_json::to_string(&replay_buffer_entry)
         .expect("Failed to serialize replay buffer entry");
-    let _: () = con.xadd(REPLAY_BUFFER_KEY, "*", &[("data", serialized)]).await?;
+    let _: () = con
+        .xadd(REPLAY_BUFFER_KEY, "*", &[("data", serialized)])
+        .await?;
 
     Ok(nodes)
 }
@@ -466,6 +468,7 @@ pub async fn spawn_mcts_workers(worker_pool_id: u32, config: ExperimentConfig) -
             .into_inner();
         let prompt_id = state.prompt_id;
         let problem = state.problem;
+        info!("Received new prompt id: {}", prompt_id);
 
         tree.prompt_id = prompt_id;
         info!("Spawning mcts worker pool for prompt id: {}", prompt_id);

@@ -84,8 +84,6 @@ class BatchInferenceService:
 
         self.per_gpu_queue = queue.Queue()
 
-        self.stop_token_id = self.config["branch_token_id"]
-
     def sync_weights(self):
         value_path, policy_path = resolve_weight_paths(self.config)
         if os.path.exists(value_path) and os.path.exists(policy_path):
@@ -125,9 +123,7 @@ class BatchInferenceService:
         for message in pubsub.listen():
             if message["type"] == "message":
                 try:
-                    data = json.loads(message["data"])
-                    version = data.get("version")
-                    print(f"Rank {self.rank}: Received weight update v{version}")
+                    json.loads(message["data"])
                     self.sync_weights()
                 except Exception as e:
                     print(f"Rank {self.rank}: Error syncing weights: {e}")
@@ -239,10 +235,8 @@ class BatchInferenceService:
             deadline = time.monotonic() + (self.max_wait_ms / 1000.0)
 
             while len(batch) < self.batch_size:
-                print(f"Rank {self.rank}: Waiting for batch with length {len(batch)}")
                 timeout = deadline - time.monotonic()
                 if timeout <= 0:
-                    print(f"Rank {self.rank}: Timeout waiting for batch")
                     break
 
                 try:
@@ -255,9 +249,6 @@ class BatchInferenceService:
             futures = [item[1] for item in batch]
 
             try:
-                print(
-                    f"Rank {self.rank}: Running batch with length {len(batch_input_ids)}"
-                )
                 generated_ids, probabilities, values = self.run_batch(batch_input_ids)
                 for fut, tok_ids, policies, val in zip(
                     futures, generated_ids, probabilities, values

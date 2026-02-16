@@ -23,10 +23,10 @@ impl InferenceClientPool {
     pub const DEFAULT_STARTUP_TIMEOUT_MS: u64 = 120_000;
     pub const STARTUP_RETRY_INTERVAL_MS: u64 = 250;
 
-    pub async fn new(num_servers: usize, base_port: usize) -> Result<Self> {
+    pub async fn new(num_servers: usize, base_port: usize, start_rank: usize) -> Result<Self> {
         let mut clients = BTreeMap::new();
         for i in 0..num_servers {
-            let port = base_port + i;
+            let port = base_port + start_rank + i;
             let client = Self::get_client(port).await?;
             clients.insert(port, client);
         }
@@ -43,13 +43,14 @@ impl InferenceClientPool {
     pub async fn wait_for_servers(
         num_servers: usize,
         base_port: usize,
+        start_rank: usize,
         max_wait: Duration,
     ) -> Result<()> {
         let start = Instant::now();
         loop {
             let mut ready = true;
             for i in 0..num_servers {
-                let addr = format!("127.0.0.1:{}", base_port + i);
+                let addr = format!("127.0.0.1:{}", base_port + start_rank + i);
                 if TcpStream::connect(&addr).await.is_err() {
                     ready = false;
                     break;
