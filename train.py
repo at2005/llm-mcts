@@ -7,7 +7,7 @@ import json
 import os
 import shutil
 import wandb
-from torch.distributed.fsdp import FullyShardedDataParallel as FSDP, StateDictType, FullStateDictConfig
+from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
 from torch.distributed.fsdp.wrap import transformer_auto_wrap_policy
 from transformers.models.llama.modeling_llama import LlamaDecoderLayer
 import functools
@@ -34,27 +34,24 @@ def publish_weights(
     tmp_policy_dir = f"{policy_dir}.tmp"
     backup_policy_dir = f"{policy_dir}.bak"
 
-    # gather full state dict from all FSDP shards (all ranks participate, only rank0 gets it)
-    full_sd_cfg = FullStateDictConfig(offload_to_cpu=True, rank0_only=True)
-    with FSDP.state_dict_type(model, StateDictType.FULL_STATE_DICT, full_sd_cfg):
-        full_sd = model.state_dict()
+    # Materialize full params directly from the FSDP-wrapped module for serialization.
+    with FSDP.summon_full_params(model, recurse=True, writeback=False, rank0_only=True):
+        if dist.get_rank() != 0:
+            return
 
-    if dist.get_rank() != 0:
-        return
+        # Extract value head weights and save.
+        value_head_sd = {
+            k: v.detach().cpu() for k, v in base_model.value_head.state_dict().items()
+        }
+        with open(tmp_value_path, "wb") as f:
+            torch.save(value_head_sd, f)
 
-    # extract value head weights and save
-    value_head_sd = {k.removeprefix("value_head."): v for k, v in full_sd.items() if k.startswith("value_head.")}
-    with open(tmp_value_path, "wb") as f:
-        torch.save(value_head_sd, f)
-
-    # temporarily load full weights into base_model for save_pretrained
-    base_model.load_state_dict(full_sd)
-    if os.path.isdir(tmp_policy_dir):
-        shutil.rmtree(tmp_policy_dir)
-    os.makedirs(tmp_policy_dir, exist_ok=True)
-    base_model.model.save_pretrained(
-        tmp_policy_dir, safe_serialization=True, max_shard_size="2GB"
-    )
+        if os.path.isdir(tmp_policy_dir):
+            shutil.rmtree(tmp_policy_dir)
+        os.makedirs(tmp_policy_dir, exist_ok=True)
+        base_model.model.save_pretrained(
+            tmp_policy_dir, safe_serialization=True, max_shard_size="2GB"
+        )
 
     os.replace(tmp_value_path, value_path)
 
