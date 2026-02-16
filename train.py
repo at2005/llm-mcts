@@ -8,6 +8,9 @@ import os
 import shutil
 import wandb
 from torch.distributed.fsdp import FullyShardedDataParallel as FSDP, StateDictType, FullStateDictConfig
+from torch.distributed.fsdp.wrap import transformer_auto_wrap_policy
+from transformers.models.llama.modeling_llama import LlamaDecoderLayer
+import functools
 from tqdm import trange
 import torch.distributed as dist
 
@@ -176,7 +179,11 @@ def train(config: dict, redis: Redis, rank: int):
     device = f"cuda:{rank}"
     base_model = TrainingModel(config).to(device)
     tokenizer = base_model.tokenizer
-    model = FSDP(base_model, use_orig_params=True)
+    wrap_policy = functools.partial(
+        transformer_auto_wrap_policy,
+        transformer_layer_cls={LlamaDecoderLayer},
+    )
+    model = FSDP(base_model, auto_wrap_policy=wrap_policy, use_orig_params=True)
     model.train()
     tokenizer.pad_token = tokenizer.eos_token
     tokenizer.padding_side = "left"
