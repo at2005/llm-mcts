@@ -5,24 +5,50 @@ from redis import Redis
 import time
 import json
 import os
+import shutil
 import wandb
+from tqdm import trange
+
+def resolve_weight_paths(config: dict) -> tuple[str, str]:
+    local_dir = config.get("weights_local_dir", "/tmp/llm-mcts-weights")
+    os.makedirs(local_dir, exist_ok=True)
+    value_path = os.path.join(local_dir, os.path.basename(config["value_head_path"]))
+    policy_path = os.path.join(local_dir, os.path.basename(config["policy_head_path"]))
+    return value_path, policy_path
 
 
 def publish_weights(
     redis: Redis, model: TrainingModel, config: dict
 ):
-    value_path = config['value_head_path']
-    policy_path = config['policy_head_path']
-    tmp_value_path = f"/tmp/{value_path}"
-    tmp_policy_path = f"/tmp/{policy_path}"
+    value_path, policy_path = resolve_weight_paths(config)
+    value_dir = os.path.dirname(os.path.abspath(value_path)) or "."
+    tmp_value_path = os.path.join(
+        value_dir, f".{os.path.basename(value_path)}.tmp"
+    )
+    policy_dir = os.path.abspath(policy_path)
+    tmp_policy_dir = f"{policy_dir}.tmp"
+    backup_policy_dir = f"{policy_dir}.bak"
 
     with open(tmp_value_path, "wb") as f:
         torch.save(model.value_head.state_dict(), f)
-    with open(tmp_policy_path, "wb") as f:
-        torch.save(model.model.state_dict(), f)
+    if os.path.isdir(tmp_policy_dir):
+        shutil.rmtree(tmp_policy_dir)
+    os.makedirs(tmp_policy_dir, exist_ok=True)
+    model.model.save_pretrained(
+        tmp_policy_dir, safe_serialization=True, max_shard_size="2GB"
+    )
 
-    os.rename(tmp_value_path, value_path)
-    os.rename(tmp_policy_path, policy_path)
+    os.replace(tmp_value_path, value_path)
+
+    if os.path.isdir(backup_policy_dir):
+        shutil.rmtree(backup_policy_dir)
+    if os.path.isdir(policy_dir):
+        os.rename(policy_dir, backup_policy_dir)
+    elif os.path.isfile(policy_dir):
+        os.remove(policy_dir)
+    os.rename(tmp_policy_dir, policy_dir)
+    if os.path.isdir(backup_policy_dir):
+        shutil.rmtree(backup_policy_dir)
 
     version = int(redis.incr("weights:version_counter"))
     meta = {
@@ -67,31 +93,31 @@ def ppo_step(
         )  # [B, T]
         denominator = logit_mask.sum(dim=1).clamp(min=1)  # [B]
 
-        log_probs = F.log_softmax(logits, dim=-1)
-        log_probs_selected = log_probs.gather(
-            dim=-1, index=targets.unsqueeze(-1)
-        ).squeeze(-1)
+        selected_logits = logits.gather(dim=-1, index=targets.unsqueeze(-1)).squeeze(-1)
+        log_norm = torch.logsumexp(logits, dim=-1)
+        log_probs_selected = selected_logits - log_norm
 
         # select for generated tokens, guaranteed to have no padding since we use left padding
         log_probs_selected = log_probs_selected.masked_fill(~logit_mask, 0)
 
-        advantage: torch.Tensor = reward.unsqueeze(-1) - values  # [B, T]
+        advantage: torch.Tensor = reward.unsqueeze(-1)# - values# [B, T]
+        baseline = reward.mean().unsqueeze(-1)
+        advantage = advantage - baseline
         advantage = advantage.masked_fill(~logit_mask, 0)
 
-    for _ in range(num_ppo_inner_steps):
+    for _ in trange(num_ppo_inner_steps, desc="PPO inner steps"):
         new_logits, new_values = model(input_ids, attention_mask)
-        new_log_probs = F.log_softmax(new_logits, dim=-1)
-
-        new_log_probs_selected = new_log_probs.gather(
+        new_selected_logits = new_logits.gather(
             dim=-1, index=targets.unsqueeze(-1)
-        ).squeeze(
-            -1
-        )  # [B, T]
+        ).squeeze(-1)  # [B, T]
+        new_log_norm = torch.logsumexp(new_logits, dim=-1)
+        new_log_probs_selected = new_selected_logits - new_log_norm
 
         # select for generated tokens, guaranteed to have no padding since we use left padding
         new_log_probs_selected = new_log_probs_selected.masked_fill(~logit_mask, 0)
 
         log_ratio = new_log_probs_selected - log_probs_selected
+        log_ratio = torch.clamp(log_ratio, min=-10, max=10)
         ratio = torch.exp(log_ratio)
         ratio_clipped = ratio.clip(1 - epsilon, 1 + epsilon)  # [B, T]
 
@@ -112,16 +138,20 @@ def ppo_step(
             c_value_loss * value_loss + c_policy_loss * policy_loss
         )
 
+
+        optimizer.zero_grad(set_to_none=True)
+        total_loss.backward()
+        grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), config["max_grad_norm"])
+
         wandb.log(
             {
                 "loss/value_loss": value_loss.item(),
                 "loss/policy_loss": policy_loss.item(),
                 "loss/total_loss": total_loss.item(),
+                "reward/mean": reward.mean().item(),
+                "grad/norm": grad_norm.item(),
             }
         )
-
-        optimizer.zero_grad()
-        total_loss.backward()
         optimizer.step()
 
 
@@ -135,17 +165,18 @@ def train(config: dict, redis: Redis, rank: int):
     max_steps = config["training_max_steps"]
     train_batch_size = config["training_batch_size"]
     max_wait_ms = config["training_max_wait_ms"]
+    max_train_seqlen = config["max_train_seqlen"]
 
-    optimizer = torch.optim.AdamW(model.parameters(), lr=config["learning_rate"])
+    optimizer = torch.optim.AdamW(model.parameters(), lr=config["learning_rate"], fused=True)
 
     if model.tokenizer.pad_token is None:
         model.tokenizer.pad_token = model.tokenizer.eos_token
 
     global_step = 0
-    # wandb.init(project="mcts-language-model", name=f"train-rank-{rank}", config=config)
+    wandb.init(project="mcts-language-model", name=f"train-rank-{rank}", config=config)
 
     while global_step < max_steps:
-        if rank == 0 and (global_step + 1) % 10 == 0:
+        if (global_step + 1) % config["update_interval"] == 0:
             publish_weights(redis, model, config)
 
         reward_batch = []
@@ -159,21 +190,22 @@ def train(config: dict, redis: Redis, rank: int):
             if timeout <= 0 and len(reward_batch) > 0:
                 break
 
-            print(f"Rank {rank}: Waiting for data from replay buffer")
+            # print(f"Rank {rank}: Waiting for data from replay buffer")
             data = redis.lpop("replay_buffer")
             if data is None:
+                time.sleep(0.01)
                 continue
 
             data = json.loads(data)
-            print(f"Rank {rank}: Received data from replay buffer")
             state = data["state"]
             reward = data["reward"]
             num_prompt_tokens = data["num_prompt_tokens"]
             num_generated_tokens = len(state) - num_prompt_tokens
 
-            print(
-                f"Rank {rank}: Reward: {reward}, State: {state}, Num prompt tokens: {num_prompt_tokens}"
-            )
+            if len(state) > max_train_seqlen:
+                num_generated_tokens = max_train_seqlen - num_prompt_tokens
+                state = state[:max_train_seqlen]
+
             reward_batch.append(torch.tensor(reward, dtype=torch.bfloat16).to(device))
             state_batch.append(state)
             generated_lengths_batch.append(num_generated_tokens)
@@ -212,4 +244,4 @@ if __name__ == "__main__":
     redis = Redis(
         host=config["redis_host"], port=config["redis_port"], db=config["redis_db"]
     )
-    train(config, redis, 5)
+    train(config, redis, 7)

@@ -5,6 +5,8 @@ from redis import Redis
 class Graders:
     def __init__(self):
         self.redis = Redis(host="localhost", port=6379, db=0)
+        self.positive_reward = 1.0
+        self.negative_reward = -1.0
 
     def maths_grader(self, string_state: str, prompt_id: int) -> float:
         # The decoded state contains the whole prompt + model output.
@@ -19,7 +21,7 @@ class Graders:
 
         matches = re.findall(r"<answer>(.*?)</answer>", search_text, re.DOTALL)
         if not matches:
-            return 0.0
+            return self.negative_reward
             # raise ValueError("No <answer>...</answer> block found in grader input")
 
         answer = matches[-1].strip()
@@ -46,6 +48,6 @@ class Graders:
         print("Answer: ", answer)
         print("Correct answer: ", correct_answer_str)
         if answer == correct_answer_str:
-            return 1.0
+            return self.positive_reward
         else:
-            return 0.0
+            return self.negative_reward

@@ -1,6 +1,8 @@
 use anyhow::Result;
 use mcts_rust::config::load_config;
+use mcts_rust::grpc::InferenceClientPool;
 use mcts_rust::mcts::spawn_mcts_workers;
+use std::time::Duration;
 use tracing::{error, info};
 
 #[tokio::main]
@@ -10,6 +12,13 @@ async fn main() -> Result<()> {
     info!("Loading config");
     let config = load_config()?;
     info!("Config loaded");
+
+    InferenceClientPool::wait_for_servers(
+        config.num_inference_gpus as usize,
+        config.inference_base_port as usize,
+        Duration::from_secs(120),
+    )
+    .await?;
 
     let num_workers = config.num_worker_groups as usize;
     info!("Starting {} MCTS worker pools", num_workers);

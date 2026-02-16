@@ -13,6 +13,7 @@ import torch
 import threading
 import sglang as sgl
 from transformers import AutoTokenizer, AutoModelForCausalLM
+from transformers.utils import is_flash_attn_2_available
 from model import ValueHead
 from concurrent.futures import Future
 from graders import Graders
@@ -27,9 +28,17 @@ from redis import Redis
 import json
 from data import MathsDataset, system_prompt_message
 from datasets import load_dataset
+from transformers.modeling_utils import load_sharded_checkpoint
 
 # dataset = "POLARIS-Project/Polaris-Dataset-53K"
 dataset = "openai/gsm8k"
+
+
+def resolve_weight_paths(config: dict) -> tuple[str, str]:
+    local_dir = config.get("weights_local_dir", "/tmp/llm-mcts-weights")
+    value_path = os.path.join(local_dir, os.path.basename(config["value_head_path"]))
+    policy_path = os.path.join(local_dir, os.path.basename(config["policy_head_path"]))
+    return value_path, policy_path
 
 
 class BatchInferenceService:
@@ -51,11 +60,23 @@ class BatchInferenceService:
             model_path=self.model_name,
             enable_return_hidden_states=True,
             port=sglang_port,
-            mem_fraction_static=0.2,
+            mem_fraction_static=0.5,
+            chunked_prefill_size=1024,
         )
+        attn_impl = (
+            "flash_attention_2" if is_flash_attn_2_available() else "sdpa"
+        )
+        if attn_impl != "flash_attention_2":
+            print(
+                f"Rank {rank}: Warning: FlashAttention2 not available for HF scorer model; falling back to SDPA."
+            )
         self.model = AutoModelForCausalLM.from_pretrained(
-            self.model_name, torch_dtype=torch.bfloat16
+            self.model_name,
+            torch_dtype=torch.bfloat16,
+            attn_implementation=attn_impl,
         ).to("cuda:0")
+        self.model.config.use_cache = False
+        self.model.eval()
 
         self.rank = rank
         self.max_wait_ms = self.config["inference_max_wait_ms"]
@@ -66,18 +87,28 @@ class BatchInferenceService:
         self.stop_token_id = self.config["branch_token_id"]
 
     def sync_weights(self):
-        value_path = self.config['value_head_path']
-        policy_path = self.config['policy_head_path']
+        value_path, policy_path = resolve_weight_paths(self.config)
         if os.path.exists(value_path) and os.path.exists(policy_path):
             with self.weights_lock:
                 state_dict = torch.load(
                     value_path, map_location="cuda:0", weights_only=True
                 )
                 self.value_head.load_state_dict(state_dict)
-                self.llm.update_weights_from_disk(policy_path)
-                self.model.load_state_dict(
-                    torch.load(policy_path, map_location="cuda:0", weights_only=True)
+                update_result = self.llm.update_weights_from_disk(policy_path)
+                if isinstance(update_result, (tuple, list)):
+                    update_ok = bool(update_result[0]) if len(update_result) > 0 else False
+                    update_msg = str(update_result[1]) if len(update_result) > 1 else ""
+                else:
+                    update_ok = bool(update_result)
+                    update_msg = ""
+                if not update_ok:
+                    raise RuntimeError(
+                        f"SGLang weight update failed: {update_msg}"
+                    )
+                load_sharded_checkpoint(
+                    self.model, policy_path, strict=True, prefer_safe=True
                 )
+                torch.cuda.empty_cache()
             print(f"Rank {self.rank}: Loaded new weights")
 
     def weight_subscriber(self):
@@ -125,17 +156,14 @@ class BatchInferenceService:
             )
             attention_mask[i, -len(token_ids) :] = 1
 
-        model_outputs = self.model(
+        model_outputs = self.model.model(
             input_ids=padded_input_ids,
             attention_mask=attention_mask,
-            output_hidden_states=True,
+            use_cache=False,
+            output_hidden_states=False,
+            return_dict=True,
         )
-        full_logits = model_outputs.logits
-        last_hidden_states = model_outputs.hidden_states[-1]
-
-        logprobs = F.log_softmax(
-            full_logits, dim=-1
-        )  # [batch_size, max_length, vocab_size]
+        last_hidden_states = model_outputs.last_hidden_state
 
         summed_logprobs = torch.zeros(
             (len(batch_token_ids)), dtype=torch.float32, device="cuda:0"
@@ -151,12 +179,10 @@ class BatchInferenceService:
             hidden_states[i] = last_hidden_states[i, -gen_length - 1, :]
 
             labels = padded_input_ids[i, -gen_length:]
-            logprobs_tok = logprobs[i, -gen_length - 1 : -1, :]
-            summed_logprobs[i] = (
-                logprobs_tok.gather(dim=-1, index=labels.unsqueeze(-1))
-                .squeeze(-1)
-                .sum()
-            )
+            logits_tok = self.model.lm_head(last_hidden_states[i, -gen_length - 1 : -1, :])
+            selected_logits = logits_tok.gather(dim=-1, index=labels.unsqueeze(-1)).squeeze(-1)
+            log_norm = torch.logsumexp(logits_tok, dim=-1)
+            summed_logprobs[i] = (selected_logits - log_norm).sum()
 
         return summed_logprobs, hidden_states
 

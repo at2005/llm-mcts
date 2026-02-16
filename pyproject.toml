@@ -15,6 +15,7 @@ dependencies = [
   "datasets>=2.14.4",
   "wandb>=0.24.1",
   "black>=26.1.0",
+  "huggingface-hub>=0.36.0",
 ]
 
 [dependency-groups]

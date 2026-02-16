@@ -162,8 +162,11 @@ impl Tree {
         config: ExperimentConfig,
         worker_id: u32,
     ) -> Result<Self> {
-        let inference_client_pool =
-            InferenceClientPool::new(config.num_inference_gpus as usize).await?;
+        let inference_client_pool = InferenceClientPool::new(
+            config.num_inference_gpus as usize,
+            config.inference_base_port as usize,
+        )
+        .await?;
         let mut nodes = Vec::with_capacity(MAX_NODES);
         nodes.resize_with(MAX_NODES, OnceLock::new);
 

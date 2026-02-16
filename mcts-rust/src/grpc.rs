@@ -1,7 +1,10 @@
 use std::collections::BTreeMap;
+use std::time::{Duration, Instant};
 
 use anyhow::Result;
+use tokio::net::TcpStream;
 use tonic::{Request, Response, transport::Channel};
+use tracing::warn;
 
 pub use crate::inference;
 use inference::inference_client::InferenceClient;
@@ -17,24 +20,59 @@ pub struct InferenceClientPool {
 
 impl InferenceClientPool {
     pub const DEFAULT_PORT: usize = 50051;
+    pub const DEFAULT_STARTUP_TIMEOUT_MS: u64 = 120_000;
+    pub const STARTUP_RETRY_INTERVAL_MS: u64 = 250;
 
-    pub async fn new(num_servers: usize) -> Result<Self> {
+    pub async fn new(num_servers: usize, base_port: usize) -> Result<Self> {
         let mut clients = BTreeMap::new();
-        let base_port = Self::DEFAULT_PORT;
         for i in 0..num_servers {
             let port = base_port + i;
-            let client = Self::get_client(Some(port)).await?;
+            let client = Self::get_client(port).await?;
             clients.insert(port, client);
         }
 
         Ok(Self { clients })
     }
 
-    pub async fn get_client(port: Option<usize>) -> Result<InferenceClient<Channel>> {
-        let port = port.unwrap_or(Self::DEFAULT_PORT);
-        let host = format!("http://[::1]:{}", port);
+    pub async fn get_client(port: usize) -> Result<InferenceClient<Channel>> {
+        let host = format!("http://127.0.0.1:{}", port);
         let client = InferenceClient::connect(host).await?;
         Ok(client)
+    }
+
+    pub async fn wait_for_servers(
+        num_servers: usize,
+        base_port: usize,
+        max_wait: Duration,
+    ) -> Result<()> {
+        let start = Instant::now();
+        loop {
+            let mut ready = true;
+            for i in 0..num_servers {
+                let addr = format!("127.0.0.1:{}", base_port + i);
+                if TcpStream::connect(&addr).await.is_err() {
+                    ready = false;
+                    break;
+                }
+            }
+
+            if ready {
+                return Ok(());
+            }
+
+            if start.elapsed() >= max_wait {
+                anyhow::bail!(
+                    "Timed out waiting for inference servers to come online after {}ms",
+                    max_wait.as_millis()
+                );
+            }
+
+            warn!(
+                "Some inference servers not online yet. Retrying in {}ms...",
+                Self::STARTUP_RETRY_INTERVAL_MS
+            );
+            tokio::time::sleep(Duration::from_millis(Self::STARTUP_RETRY_INTERVAL_MS)).await;
+        }
     }
 
     pub async fn get_random_client(&self) -> Result<InferenceClient<Channel>> {
