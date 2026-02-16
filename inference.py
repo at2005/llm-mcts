@@ -52,7 +52,7 @@ class BatchInferenceService:
         )
         self.model_name = self.config["model_name"]
         self.weights_lock = threading.Lock()
-        self.tokenizer = AutoTokenizer.from_pretrained(self.model_name)
+        self.tokenizer = AutoTokenizer.from_pretrained(self.config["tokenizer_name"])
         self.tokenizer.pad_token = self.tokenizer.eos_token
         # Each rank needs its own sglang port to avoid conflicts
         sglang_port = 30000 + rank

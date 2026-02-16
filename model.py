@@ -39,7 +39,7 @@ class TrainingModel(nn.Module):
         self.model.config.use_cache = False
         self.model.gradient_checkpointing_enable()
         self.model.train()
-        self.tokenizer = AutoTokenizer.from_pretrained(self.model_name)
+        self.tokenizer = AutoTokenizer.from_pretrained(self.config["tokenizer_name"])
         self.value_head = ValueHead(self.config["hidden_size"]).to(torch.bfloat16)
 
     def forward(self, input_ids: torch.Tensor, attention_mask: torch.Tensor):

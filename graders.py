@@ -19,10 +19,13 @@ class Graders:
         else:
             search_text = string_state
 
+        reward = 0.0
         matches = re.findall(r"<answer>(.*?)</answer>", search_text, re.DOTALL)
         if not matches:
             return self.negative_reward
             # raise ValueError("No <answer>...</answer> block found in grader input")
+        else:
+            reward += 0.1
 
         answer = matches[-1].strip()
         try:
@@ -45,6 +48,6 @@ class Graders:
             correct_answer_str = str(correct_answer).strip()
 
         if answer == correct_answer_str:
-            return self.positive_reward
+            return self.positive_reward + reward
         else:
-            return self.negative_reward
+            return self.negative_reward + reward
