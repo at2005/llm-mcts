@@ -176,7 +176,7 @@ def train(config: dict, redis: Redis, rank: int):
     device = f"cuda:{rank}"
     base_model = TrainingModel(config).to(device)
     tokenizer = base_model.tokenizer
-    model = FSDP(base_model)
+    model = FSDP(base_model, use_orig_params=True)
     model.train()
     tokenizer.pad_token = tokenizer.eos_token
     tokenizer.padding_side = "left"
