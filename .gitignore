@@ -17,3 +17,5 @@ wandb/
 
 *.pth
 *.rdb
+
+.DS_Store

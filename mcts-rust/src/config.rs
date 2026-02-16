@@ -25,8 +25,6 @@ pub struct ExperimentConfig {
     pub c_puct: f32,
     pub virtual_loss: u32,
     pub eos_token_id: u64,
-    pub branch_token: String,
-    pub branch_token_id: u64,
     pub c_value_loss: f32,
     pub c_policy_loss: f32,
     pub training_max_wait_ms: u32,

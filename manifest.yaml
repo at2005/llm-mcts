@@ -1,0 +1,57 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: ayush 
+  namespace: tenant-ac-ayush
+spec:
+  serviceName: ayush
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ayush
+  template:
+    metadata:
+      labels:
+        app: ayush
+    spec:
+      containers:
+      - name: ayush-pod
+        image: ghcr.io/coreweave/ml-containers/torch:f575d1b-nccl-cuda12.6.1-ubuntu22.04-nccl2.23.4-1-torch2.5.0-vision0.20.0-audio2.5.0
+        command: ["sleep", "infinity"]
+        resources:
+          requests:
+            nvidia.com/gpu: "8"
+            sunk.coreweave.com/accelerator: "8"
+            cpu: "64"
+            memory: "1.5Ti"
+          limits:
+            nvidia.com/gpu: "8"
+            sunk.coreweave.com/accelerator: "8"
+            cpu: "64"
+            memory: "1.5Ti"
+        volumeMounts:
+        - name: data-volume
+          mountPath: /mnt/data
+        - name: dshm
+          mountPath: /dev/shm
+      volumes:
+      - name: data-volume
+        persistentVolumeClaim:
+          claimName: divine-term
+      - name: dshm
+        emptyDir:
+          medium: Memory
+          sizeLimit: "128Gi"
+      tolerations:
+      - key: "nvidia.com/gpu"
+        operator: "Exists"
+        effect: "NoSchedule"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ayush
+spec:
+  clusterIP: None
+  selector:
+    app: ayush

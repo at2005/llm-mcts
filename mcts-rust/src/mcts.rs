@@ -446,7 +446,7 @@ pub async fn greedy_select(con: &mut ConnectionManager, tree: &Tree) -> Result<V
         ReplayBufferEntry::new(state, tree.prompt_id, reward, num_prompt_tokens);
     let serialized = serde_json::to_string(&replay_buffer_entry)
         .expect("Failed to serialize replay buffer entry");
-    let _: () = con.lpush(REPLAY_BUFFER_KEY, serialized).await?;
+    let _: () = con.xadd(REPLAY_BUFFER_KEY, "*", &[("data", serialized)]).await?;
 
     Ok(nodes)
 }

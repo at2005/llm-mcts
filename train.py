@@ -7,7 +7,9 @@ import json
 import os
 import shutil
 import wandb
+from torch.nn.parallel import DistributedDataParallel as DDP
 from tqdm import trange
+import torch.distributed as dist
 
 def resolve_weight_paths(config: dict) -> tuple[str, str]:
     local_dir = config.get("weights_local_dir", "/tmp/llm-mcts-weights")
@@ -158,6 +160,7 @@ def ppo_step(
 def train(config: dict, redis: Redis, rank: int):
     device = f"cuda:{rank}"
     model = TrainingModel(config).to(device)
+    model = DDP(model, device_ids=[rank])
     model.train()
     model.tokenizer.pad_token = model.tokenizer.eos_token
     model.tokenizer.padding_side = "left"
@@ -175,6 +178,14 @@ def train(config: dict, redis: Redis, rank: int):
     global_step = 0
     wandb.init(project="mcts-language-model", name=f"train-rank-{rank}", config=config)
 
+    stream_key = "replay_buffer"
+    group_name = "trainers"
+    consumer_name = f"consumer_{rank}"
+    try:
+        redis.xgroup_create(stream_key, group_name, id="0", mkstream=True)
+    except Exception:
+        print(f"Group {group_name} already exists")
+
     while global_step < max_steps:
         if (global_step + 1) % config["update_interval"] == 0:
             publish_weights(redis, model, config)
@@ -191,12 +202,18 @@ def train(config: dict, redis: Redis, rank: int):
                 break
 
             # print(f"Rank {rank}: Waiting for data from replay buffer")
-            data = redis.lpop("replay_buffer")
-            if data is None:
-                time.sleep(0.01)
+            resp = redis.xreadgroup(
+                group_name, consumer_name,
+                {stream_key: ">"},
+                count=1,
+                block=int(max(timeout * 1000, 10)),
+            )
+            if not resp:
                 continue
 
-            data = json.loads(data)
+            msg_id, fields = resp[0][1][0]
+            redis.xack(stream_key, group_name, msg_id)
+            data = json.loads(fields[b"data"])
             state = data["state"]
             reward = data["reward"]
             num_prompt_tokens = data["num_prompt_tokens"]
@@ -240,8 +257,9 @@ def train(config: dict, redis: Redis, rank: int):
 
 
 if __name__ == "__main__":
+    dist.init_process_group(backend="nccl")
     config = json.load(open("configs/config.json"))
     redis = Redis(
         host=config["redis_host"], port=config["redis_port"], db=config["redis_db"]
     )
-    train(config, redis, 7)
+    train(config, redis, dist.get_rank())
