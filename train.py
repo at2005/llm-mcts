@@ -10,6 +10,7 @@ import wandb
 from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
 from torch.distributed.fsdp.wrap import transformer_auto_wrap_policy
 from transformers.models.llama.modeling_llama import LlamaDecoderLayer
+# from transformers.models.qwen2.modeling_qwen2 import Qwen2DecoderLayer
 import functools
 from tqdm import trange
 import torch.distributed as dist
@@ -116,9 +117,7 @@ def ppo_step(
         # select for generated tokens, guaranteed to have no padding since we use left padding
         log_probs_selected = log_probs_selected.masked_fill(~logit_mask, 0)
 
-        advantage: torch.Tensor = reward.unsqueeze(-1)# - values# [B, T]
-        baseline = reward.mean().unsqueeze(-1)
-        advantage = advantage - baseline
+        advantage: torch.Tensor = reward.unsqueeze(-1) - values.detach() # [B, T]
         advantage = advantage.masked_fill(~logit_mask, 0)
 
     for _ in trange(num_ppo_inner_steps, desc="PPO inner steps", disable=not log_metrics):

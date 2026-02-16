@@ -103,9 +103,14 @@ class BatchInferenceService:
                     raise RuntimeError(
                         f"SGLang weight update failed: {update_msg}"
                     )
-                load_sharded_checkpoint(
-                    self.model, policy_path, strict=True, prefer_safe=True
-                )
+                if self.config["model_name"] == "meta-llama/Llama-3.2-1B-Instruct":
+                    load_sharded_checkpoint(
+                        self.model, policy_path, strict=False, prefer_safe=True
+                    )
+                else:
+                    load_sharded_checkpoint(
+                        self.model, policy_path, strict=True, prefer_safe=True
+                    )
                 torch.cuda.empty_cache()
             print(f"Rank {self.rank}: Loaded new weights")
 

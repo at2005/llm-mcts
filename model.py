@@ -9,10 +9,11 @@ class ValueHead(nn.Module):
     def __init__(self, hidden_size: int):
         super().__init__()
         self.head = nn.Sequential(
-            nn.Linear(hidden_size, hidden_size),
+            nn.Linear(hidden_size, hidden_size * 4),
+            nn.ReLU(),
+            nn.Linear(hidden_size * 4, hidden_size),
             nn.ReLU(),
             nn.Linear(hidden_size, 1),
-            # nn.Sigmoid(),
         )
 
     def forward(self, hidden_states: torch.Tensor):
@@ -24,6 +25,7 @@ class TrainingModel(nn.Module):
         super().__init__()
         self.config = config
         self.model_name = self.config["model_name"]
+        self.value_norm = nn.LayerNorm(config["hidden_size"]).to(torch.bfloat16)
         attn_impl = (
             "flash_attention_2" if is_flash_attn_2_available() else "sdpa"
         )
@@ -53,9 +55,8 @@ class TrainingModel(nn.Module):
             )
             hidden_states = base_outputs.last_hidden_state
             logits = self.model.lm_head(hidden_states)
-        last_tok_hidden_states: torch.Tensor = hidden_states[:, -1:, :]
 
         with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
-            value = self.value_head(last_tok_hidden_states).squeeze(-1)  # [batch_size]
+            value = self.value_head(self.value_norm(hidden_states)).squeeze(-1)  # [B, T]
 
         return logits, value  # [batch_size, vocab_size], [batch_size]
