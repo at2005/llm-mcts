@@ -7,13 +7,9 @@ import json
 import os
 import shutil
 import wandb
-from torch.nn.parallel import DistributedDataParallel as DDP
+from torch.distributed.fsdp import FullyShardedDataParallel as FSDP, StateDictType, FullStateDictConfig
 from tqdm import trange
 import torch.distributed as dist
-
-def unwrap_model(model: torch.nn.Module) -> TrainingModel:
-    return model.module if isinstance(model, DDP) else model
-
 
 def resolve_weight_paths(config: dict) -> tuple[str, str]:
     local_dir = config.get("weights_local_dir", "/tmp/llm-mcts-weights")
@@ -24,9 +20,8 @@ def resolve_weight_paths(config: dict) -> tuple[str, str]:
 
 
 def publish_weights(
-    redis: Redis, model: torch.nn.Module, config: dict
+    redis: Redis, model: FSDP, base_model: TrainingModel, config: dict
 ):
-    base_model = unwrap_model(model)
     value_path, policy_path = resolve_weight_paths(config)
     value_dir = os.path.dirname(os.path.abspath(value_path)) or "."
     tmp_value_path = os.path.join(
@@ -36,8 +31,21 @@ def publish_weights(
     tmp_policy_dir = f"{policy_dir}.tmp"
     backup_policy_dir = f"{policy_dir}.bak"
 
+    # gather full state dict from all FSDP shards (all ranks participate, only rank0 gets it)
+    full_sd_cfg = FullStateDictConfig(offload_to_cpu=True, rank0_only=True)
+    with FSDP.state_dict_type(model, StateDictType.FULL_STATE_DICT, full_sd_cfg):
+        full_sd = model.state_dict()
+
+    if dist.get_rank() != 0:
+        return
+
+    # extract value head weights and save
+    value_head_sd = {k.removeprefix("value_head."): v for k, v in full_sd.items() if k.startswith("value_head.")}
     with open(tmp_value_path, "wb") as f:
-        torch.save(base_model.value_head.state_dict(), f)
+        torch.save(value_head_sd, f)
+
+    # temporarily load full weights into base_model for save_pretrained
+    base_model.load_state_dict(full_sd)
     if os.path.isdir(tmp_policy_dir):
         shutil.rmtree(tmp_policy_dir)
     os.makedirs(tmp_policy_dir, exist_ok=True)
@@ -168,7 +176,7 @@ def train(config: dict, redis: Redis, rank: int):
     device = f"cuda:{rank}"
     base_model = TrainingModel(config).to(device)
     tokenizer = base_model.tokenizer
-    model = DDP(base_model, device_ids=[rank])
+    model = FSDP(base_model)
     model.train()
     tokenizer.pad_token = tokenizer.eos_token
     tokenizer.padding_side = "left"
@@ -200,8 +208,8 @@ def train(config: dict, redis: Redis, rank: int):
 
     try:
         while global_step < max_steps:
-            if is_rank0 and (global_step + 1) % config["update_interval"] == 0:
-                publish_weights(redis, model, config)
+            if (global_step + 1) % config["update_interval"] == 0:
+                publish_weights(redis, model, base_model, config)
 
             reward_batch = []
             state_batch = []
