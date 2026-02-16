@@ -26,12 +26,9 @@ import torch.nn.functional as F
 import gc
 from redis import Redis
 import json
-from data import MathsDataset, system_prompt_message
+from data import get_dataset, system_prompt_message
 from datasets import load_dataset
 from transformers.modeling_utils import load_sharded_checkpoint
-
-# dataset = "POLARIS-Project/Polaris-Dataset-53K"
-dataset = "openai/gsm8k"
 
 
 def resolve_weight_paths(config: dict) -> tuple[str, str]:
@@ -273,10 +270,8 @@ class InferenceServicer(inference_pb2_grpc.InferenceServicer):
         self.batch_inference_service = batch_inference_service
         self.graders = Graders()
         dataset_seed = self.batch_inference_service.config.get("dataset_seed")
-        self.maths_dataset = MathsDataset(
-            load_dataset(dataset, "main", split="train"),
-            seed=dataset_seed,
-        )
+        dataset_name = self.batch_inference_service.config.get("dataset_name")
+        self.maths_dataset = get_dataset(dataset_name, seed=dataset_seed)
 
     def infer(self, request: InferenceRequest, context):
         fut = Future()
