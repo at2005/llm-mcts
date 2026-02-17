@@ -109,7 +109,7 @@ class BatchInferenceService:
                         self.model, policy_path, strict=True, prefer_safe=True
                     )
                 torch.cuda.empty_cache()
-            print(f"Rank {self.rank}: Loaded new weights")
+            # print(f"Rank {self.rank}: Loaded new weights")
 
     def weight_subscriber(self):
         redis = Redis(
@@ -269,9 +269,18 @@ class InferenceServicer(inference_pb2_grpc.InferenceServicer):
     def __init__(self, batch_inference_service: BatchInferenceService):
         self.batch_inference_service = batch_inference_service
         self.graders = Graders()
+        self.redis = Redis(
+            host=self.batch_inference_service.config["redis_host"],
+            port=self.batch_inference_service.config["redis_port"],
+            db=self.batch_inference_service.config["redis_db"],
+        )
         dataset_seed = self.batch_inference_service.config.get("dataset_seed")
-        dataset_name = self.batch_inference_service.config.get("dataset_name")
-        self.maths_dataset = get_dataset(dataset_name, seed=dataset_seed)
+        
+        # different splits per rank but replicable across jobs 
+        dataset_seed += self.batch_inference_service.rank
+
+        self.dataset_name = self.batch_inference_service.config.get("dataset_name")
+        self.maths_dataset = get_dataset(self.dataset_name, seed=dataset_seed)
 
     def infer(self, request: InferenceRequest, context):
         fut = Future()
@@ -286,12 +295,17 @@ class InferenceServicer(inference_pb2_grpc.InferenceServicer):
         state = request.state
         prompt_id = request.prompt_id
         string_state = self.batch_inference_service.tokenizer.decode(state)
-        # parse answer in <answer>...</answer>
-        reward = self.graders.maths_grader(string_state, prompt_id)
+        if self.dataset_name == "openai/gsm8k":
+            reward = self.graders.gsm8k_grader(string_state, prompt_id)
+        else:
+            reward = self.graders.maths_grader(string_state, prompt_id)
         return inference_pb2.GraderResponse(reward=reward)
 
     def get_prompt(self, request: GetPromptRequest, context):
-        idx, problem, answer = next(self.maths_dataset)
+        _, problem, answer = next(self.maths_dataset)
+        prompt_uid = int(self.redis.incr("prompt_uid_counter"))
+        answer_to_store = "" if answer is None else str(answer)
+        self.redis.set(f"correct_answer:{prompt_uid}", answer_to_store)
         message = [system_prompt_message, {"role": "user", "content": problem}]
         chat_template = self.batch_inference_service.tokenizer.apply_chat_template(
             message,
@@ -299,7 +313,7 @@ class InferenceServicer(inference_pb2_grpc.InferenceServicer):
             add_generation_prompt=True,
         )
         tokenized_ids = self.batch_inference_service.tokenizer.encode(chat_template)
-        return inference_pb2.GetPromptResponse(prompt_id=idx, problem=tokenized_ids)
+        return inference_pb2.GetPromptResponse(prompt_id=prompt_uid, problem=tokenized_ids)
 
 
 def test(rank: int):

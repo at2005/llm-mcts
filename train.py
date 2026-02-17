@@ -197,7 +197,7 @@ def train(config: dict, redis: Redis, rank: int):
     is_rank0 = rank == 0
     global_step = 0
     if is_rank0:
-        wandb.init(project="mcts-language-model", name="train-rank-0", config=config)
+        wandb.init(project="mcts-language-model", name="llama8b-math", config=config)
 
     stream_key = "replay_buffer"
     group_name = "trainers"

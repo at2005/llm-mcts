@@ -30,6 +30,8 @@ pub struct ExperimentConfig {
     pub c_policy_loss: f32,
     pub training_max_wait_ms: u32,
     pub training_max_steps: u32,
+    #[serde(default)]
+    pub ui_logging_enabled: bool,
     pub value_head_path: String,
     pub policy_head_path: String,
     pub learning_rate: f32,

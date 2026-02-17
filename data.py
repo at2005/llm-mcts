@@ -14,7 +14,7 @@ Rules:
 1) Every message you produce must follow the format above: steps first, then a single <answer> block.
 2) Do NOT put anything outside step blocks except the final <answer>...</answer>.
 3) Each step should be concise, logically ordered, and sufficient to justify the final answer.
-4) The content inside <answer>...</answer> MUST always be in LaTeX format (without surrounding $$), e.g. <answer>\\frac{3}{7}</answer>, <answer>50</answer>, <answer>\\sqrt{2}</answer>.
+4) The final answer inside <answer>...</answer> MUST be exactly one boxed LaTeX expression, formatted as <answer>\\boxed{...}</answer>. Do not include extra text, and do not use unmatched $ delimiters.
 """
 
 system_prompt_message = {"role": "system", "content": system_prompt}
@@ -59,7 +59,6 @@ class MATHDataset(Dataset):
         item = self.ds[idx]
         problem = item["problem"]
         answer = item["solution"]
-        self.redis.set(f"correct_answer:{idx}", answer)
         return idx, problem, answer
     
     def __next__(self):
@@ -94,7 +93,6 @@ class GSM8KMathsDataset(Dataset):
         problem = item["question"]
         answer = item["answer"]
         parsed_answer = parse_after_hashes(answer)
-        self.redis.set(f"correct_answer:{idx}", parsed_answer)
         return idx, problem, parsed_answer
 
     def __next__(self):

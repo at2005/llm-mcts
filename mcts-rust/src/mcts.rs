@@ -3,7 +3,7 @@ use redis::{AsyncCommands, aio::ConnectionManager};
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 use std::sync::{Arc, OnceLock};
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 pub type NodeId = usize;
 use crate::config::ExperimentConfig;
@@ -170,6 +170,10 @@ impl Tree {
         .await?;
         let mut nodes = Vec::with_capacity(MAX_NODES);
         nodes.resize_with(MAX_NODES, OnceLock::new);
+        let mut logger = Logger::new(None, worker_id)?;
+        if !config.ui_logging_enabled {
+            logger.deactivate();
+        }
 
         Ok(Self {
             nodes: nodes.into(),
@@ -178,7 +182,7 @@ impl Tree {
             episode_id,
             prompt_id,
             config,
-            logger: Logger::new(None, worker_id)?,
+            logger,
         })
     }
 
@@ -186,7 +190,9 @@ impl Tree {
         let id = self.size.fetch_add(1, Ordering::Relaxed);
         self.nodes[id].set(node).expect("slot already taken");
         let node = self.nodes[id].get().expect("node uninitialized");
-        self.logger.log_node(id, &node).await?;
+        if let Err(e) = self.logger.log_node(id, &node).await {
+            warn!("Failed to log node {}: {:?}", id, e);
+        }
         Ok(id)
     }
 
@@ -312,7 +318,13 @@ impl Tree {
                     // we have acquired the right to allocate the child
                     let new_state = self.build_new_state(parent, edge.contents.clone());
                     let new_node = Node::new(Some(parent), new_state);
-                    let new_node_id = self.node_alloc(new_node).await?;
+                    let new_node_id = match self.node_alloc(new_node).await {
+                        Ok(node_id) => node_id,
+                        Err(e) => {
+                            edge.child_id.store(NO_CHILD, Ordering::Release);
+                            return Err(e);
+                        }
+                    };
                     edge.child_id.store(new_node_id, Ordering::Release);
                     return Ok(new_node_id);
                 }
@@ -500,6 +512,7 @@ pub async fn spawn_mcts_workers(worker_pool_id: u32, config: ExperimentConfig) -
         let mut con = client.get_connection_manager().await?;
         info!("Greedy selecting");
         greedy_select(&mut con, &tree).await?;
+        info!("Greedy selection completed");
         iters += 1;
     }
 }
