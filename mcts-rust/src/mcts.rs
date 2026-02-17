@@ -484,7 +484,6 @@ pub async fn spawn_mcts_workers(worker_pool_id: u32, config: ExperimentConfig) -
 
         tree.prompt_id = prompt_id;
         info!("Spawning mcts worker pool for prompt id: {}", prompt_id);
-        info!("Problem: {:?}", problem);
 
         let root_node = Node::new(None, problem.into());
         tree.node_alloc(root_node).await?;

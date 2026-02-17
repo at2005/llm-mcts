@@ -29,6 +29,7 @@ import json
 from data import get_dataset, system_prompt_message
 from datasets import load_dataset
 from transformers.modeling_utils import load_sharded_checkpoint
+from safetensors.torch import load_file as load_safetensors_file
 
 
 def resolve_weight_paths(config: dict) -> tuple[str, str]:
@@ -36,6 +37,33 @@ def resolve_weight_paths(config: dict) -> tuple[str, str]:
     value_path = os.path.join(local_dir, os.path.basename(config["value_head_path"]))
     policy_path = os.path.join(local_dir, os.path.basename(config["policy_head_path"]))
     return value_path, policy_path
+
+
+def load_policy_checkpoint(model: AutoModelForCausalLM, checkpoint_path: str, strict: bool) -> None:
+    # support both sharded HF checkpoints and a single-file save_pretrained result
+    safe_index = os.path.join(checkpoint_path, "model.safetensors.index.json")
+    bin_index = os.path.join(checkpoint_path, "pytorch_model.bin.index.json")
+    if os.path.isfile(safe_index) or os.path.isfile(bin_index):
+        load_sharded_checkpoint(model, checkpoint_path, strict=strict, prefer_safe=True)
+        return
+
+    safe_file = os.path.join(checkpoint_path, "model.safetensors")
+    if os.path.isfile(safe_file):
+        state_dict = load_safetensors_file(safe_file, device="cpu")
+        model.load_state_dict(state_dict, strict=strict)
+        return
+
+    bin_file = os.path.join(checkpoint_path, "pytorch_model.bin")
+    if os.path.isfile(bin_file):
+        state_dict = torch.load(bin_file, map_location="cpu", weights_only=True)
+        model.load_state_dict(state_dict, strict=strict)
+        return
+
+    raise FileNotFoundError(
+        f"No supported checkpoint files found in {checkpoint_path}. "
+        "Expected one of: model.safetensors.index.json, pytorch_model.bin.index.json, "
+        "model.safetensors, pytorch_model.bin."
+    )
 
 
 class BatchInferenceService:
@@ -100,14 +128,10 @@ class BatchInferenceService:
                     raise RuntimeError(
                         f"SGLang weight update failed: {update_msg}"
                     )
-                if self.config["model_name"] == "meta-llama/Llama-3.2-1B-Instruct":
-                    load_sharded_checkpoint(
-                        self.model, policy_path, strict=False, prefer_safe=True
-                    )
+                if self.config["model_name"] == "meta-llama/Llama-3.2-1B-Instruct" or self.config["model_name"] == "Qwen/Qwen2.5-0.5B-Instruct":
+                    load_policy_checkpoint(self.model, policy_path, strict=False)
                 else:
-                    load_sharded_checkpoint(
-                        self.model, policy_path, strict=True, prefer_safe=True
-                    )
+                    load_policy_checkpoint(self.model, policy_path, strict=False)
                 torch.cuda.empty_cache()
             # print(f"Rank {self.rank}: Loaded new weights")
 
@@ -249,6 +273,7 @@ class BatchInferenceService:
 
             batch_input_ids = [item[0] for item in batch]
             futures = [item[1] for item in batch]
+            # print(f"Rank {self.rank}: Running batch of size {len(batch)}")
 
             try:
                 generated_ids, probabilities, values = self.run_batch(batch_input_ids)
@@ -297,7 +322,7 @@ class InferenceServicer(inference_pb2_grpc.InferenceServicer):
         string_state = self.batch_inference_service.tokenizer.decode(state)
         if self.dataset_name == "openai/gsm8k":
             reward = self.graders.gsm8k_grader(string_state, prompt_id)
-        else:
+        elif self.dataset_name == "EleutherAI/hendrycks_math":
             reward = self.graders.maths_grader(string_state, prompt_id)
         return inference_pb2.GraderResponse(reward=reward)
 

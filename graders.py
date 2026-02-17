@@ -80,6 +80,7 @@ class Graders:
 
 
     def gsm8k_grader(self, string_state: str, prompt_id: int) -> float:
+        # print("Running GSM8K grader")
         reward = 0.0
         answer = self.parse_answer(string_state)
         if answer is None:
@@ -89,6 +90,7 @@ class Graders:
 
         try:
             correct_answer = self.redis.get(f"correct_answer:{prompt_id}")
+            # print(f"Correct answer for prompt {prompt_id} from Redis: {correct_answer}")
         except Exception as exc:
             raise RuntimeError(
                 f"Failed to read correct answer for prompt {prompt_id} from Redis"
@@ -108,6 +110,8 @@ class Graders:
             correct_answer_str = str(correct_answer).strip()
 
         if answer == correct_answer_str:
+            # print(f"Answer is correct for prompt {prompt_id}")
             return self.positive_reward + reward
         else:
+            # print(f"Answer is incorrect for prompt {prompt_id}")
             return self.negative_reward + reward

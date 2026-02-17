@@ -9,8 +9,8 @@ import shutil
 import wandb
 from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
 from torch.distributed.fsdp.wrap import transformer_auto_wrap_policy
-from transformers.models.llama.modeling_llama import LlamaDecoderLayer
-# from transformers.models.qwen2.modeling_qwen2 import Qwen2DecoderLayer
+# from transformers.models.llama.modeling_llama import LlamaDecoderLayer
+from transformers.models.qwen2.modeling_qwen2 import Qwen2DecoderLayer
 import functools
 from tqdm import trange
 import torch.distributed as dist
@@ -177,7 +177,7 @@ def train(config: dict, redis: Redis, rank: int):
     tokenizer = base_model.tokenizer
     wrap_policy = functools.partial(
         transformer_auto_wrap_policy,
-        transformer_layer_cls={LlamaDecoderLayer},
+        transformer_layer_cls={Qwen2DecoderLayer},
     )
     model = FSDP(base_model, auto_wrap_policy=wrap_policy, use_orig_params=True)
     model.train()
@@ -197,7 +197,7 @@ def train(config: dict, redis: Redis, rank: int):
     is_rank0 = rank == 0
     global_step = 0
     if is_rank0:
-        wandb.init(project="mcts-language-model", name="llama8b-math", config=config)
+        wandb.init(project="mcts-language-model", name="qwen0.5b-gsm8k", config=config)
 
     stream_key = "replay_buffer"
     group_name = "trainers"

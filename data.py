@@ -14,7 +14,7 @@ Rules:
 1) Every message you produce must follow the format above: steps first, then a single <answer> block.
 2) Do NOT put anything outside step blocks except the final <answer>...</answer>.
 3) Each step should be concise, logically ordered, and sufficient to justify the final answer.
-4) The final answer inside <answer>...</answer> MUST be exactly one boxed LaTeX expression, formatted as <answer>\\boxed{...}</answer>. Do not include extra text, and do not use unmatched $ delimiters.
+4) If the final answer is a single integer or a terminating decimal, put it as plain text with no LaTeX, e.g. <answer>50</answer>. Do not add dollar signs or any other units of measurement.
 """
 
 system_prompt_message = {"role": "system", "content": system_prompt}

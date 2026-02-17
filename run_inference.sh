@@ -3,6 +3,8 @@ set -euo pipefail
 
 mkdir -p logs
 
+./reset.sh
+
 cleanup() {
   echo
   echo "Ctrl-C caught -> stopping all ranks..."
