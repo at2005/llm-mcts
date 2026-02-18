@@ -19,3 +19,4 @@ wandb/
 *.rdb
 
 .DS_Store
+trainer_output/
