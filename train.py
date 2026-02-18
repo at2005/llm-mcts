@@ -1,4 +1,5 @@
 import torch
+import torch.nn as nn
 import torch.nn.functional as F
 from model import TrainingModel
 from redis import Redis
@@ -82,6 +83,19 @@ def publish_weights(
     redis.publish("weights:updates", json.dumps({"version": version}))
 
 
+def build_kl_reference_model(
+    config: dict, source_model: TrainingModel, device: str
+) -> TrainingModel:
+    kl_model = TrainingModel(config).to(device)
+    kl_model.load_state_dict(source_model.state_dict(), strict=True)
+    kl_model.model.gradient_checkpointing_disable()
+    kl_model.model.config.use_cache = False
+    kl_model.eval()
+    for parameter in kl_model.parameters():
+        parameter.requires_grad_(False)
+    return kl_model
+
+
 def ppo_step(
     input_ids: torch.Tensor,
     targets: torch.Tensor,
@@ -89,6 +103,7 @@ def ppo_step(
     attention_mask: torch.Tensor,
     generated_lengths: torch.Tensor,
     model: TrainingModel,
+    kl_model: nn.Module,
     optimizer: torch.optim.Optimizer,
     config: dict,
     log_metrics: bool,
@@ -96,6 +111,7 @@ def ppo_step(
     epsilon = config["ppo_epsilon"]
     c_value_loss = config["c_value_loss"]
     c_policy_loss = config["c_policy_loss"]
+    c_kl_loss = config["c_kl_loss"]
     num_ppo_inner_steps = config["num_ppo_inner_steps"]
 
     with torch.no_grad():
@@ -119,6 +135,14 @@ def ppo_step(
 
         advantage: torch.Tensor = reward.unsqueeze(-1) - values.detach() # [B, T]
         advantage = advantage.masked_fill(~logit_mask, 0)
+
+        kl_logits, _ = kl_model(input_ids, attention_mask)
+        kl_selected_logits = kl_logits.gather(dim=-1, index=targets.unsqueeze(-1)).squeeze(-1)
+        kl_log_norm = torch.logsumexp(kl_logits, dim=-1)
+        kl_log_probs_selected = kl_selected_logits - kl_log_norm
+        kl_log_probs_selected = kl_log_probs_selected.masked_fill(~logit_mask, 0)
+
+
 
     for _ in trange(num_ppo_inner_steps, desc="PPO inner steps", disable=not log_metrics):
         new_logits, new_values = model(input_ids, attention_mask)
@@ -145,12 +169,17 @@ def ppo_step(
         new_values = new_values.masked_fill(~logit_mask, 0)
         value_mse = (new_values - reward.unsqueeze(-1)) ** 2
         value_loss: torch.Tensor = value_mse.sum(dim=1) / denominator  # [B]
+        kl_log_ratio = kl_log_probs_selected - new_log_probs_selected
+        kl_loss = torch.exp(kl_log_ratio) - kl_log_ratio - 1.0
+        kl_loss = kl_loss.masked_fill(~logit_mask, 0)
+        kl_loss = kl_loss.sum(dim=1) / denominator
 
         value_loss = value_loss.mean()
         policy_loss = policy_loss.mean()
+        kl_loss = kl_loss.mean()
 
         total_loss: torch.Tensor = (
-            c_value_loss * value_loss + c_policy_loss * policy_loss
+            c_value_loss * value_loss + c_policy_loss * policy_loss + c_kl_loss * kl_loss
         )
 
 
@@ -164,6 +193,7 @@ def ppo_step(
                     "loss/value_loss": value_loss.item(),
                     "loss/policy_loss": policy_loss.item(),
                     "loss/total_loss": total_loss.item(),
+                    "loss/kl_loss": kl_loss.item(),
                     "reward/mean": reward.mean().item(),
                     "grad/norm": grad_norm.item(),
                 }
@@ -179,6 +209,9 @@ def train(config: dict, redis: Redis, rank: int):
         transformer_auto_wrap_policy,
         transformer_layer_cls={Qwen2DecoderLayer},
     )
+
+    kl_model = build_kl_reference_model(config, base_model, device)
+
     model = FSDP(base_model, auto_wrap_policy=wrap_policy, use_orig_params=True)
     model.train()
     tokenizer.pad_token = tokenizer.eos_token
@@ -197,7 +230,7 @@ def train(config: dict, redis: Redis, rank: int):
     is_rank0 = rank == 0
     global_step = 0
     if is_rank0:
-        wandb.init(project="mcts-language-model", name="qwen0.5b-gsm8k", config=config)
+        wandb.init(project="mcts-language-model", name="qwen1.5b-gsm8k", config=config)
 
     stream_key = "replay_buffer"
     group_name = "trainers"
@@ -273,6 +306,7 @@ def train(config: dict, redis: Redis, rank: int):
                 attention_mask,
                 generated_lengths_batch_tensor,
                 model,
+                kl_model,
                 optimizer,
                 config,
                 log_metrics=is_rank0,
