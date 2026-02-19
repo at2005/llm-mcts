@@ -9,6 +9,7 @@ class Graders:
         self.positive_reward = 1.0
         self.negative_reward = -1.0
         self._missing_reward = 0.0
+        self.format_reward = 0.0
         self._redis_retry_attempts = 3
         self._redis_retry_delay_s = 0.05
     
@@ -86,7 +87,7 @@ class Graders:
         if answer is None:
             return self.negative_reward
         else:
-            reward += 0.1
+            reward += self.format_reward
 
         try:
             correct_answer = self.redis.get(f"correct_answer:{prompt_id}")

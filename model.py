@@ -14,6 +14,7 @@ class ValueHead(nn.Module):
             nn.Linear(hidden_size * 4, hidden_size),
             nn.ReLU(),
             nn.Linear(hidden_size, 1),
+            nn.Tanh(),
         )
 
     def forward(self, hidden_states: torch.Tensor):

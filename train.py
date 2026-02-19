@@ -168,6 +168,7 @@ def ppo_step(
 
         new_values = new_values.masked_fill(~logit_mask, 0)
         value_mse = (new_values - reward.unsqueeze(-1)) ** 2
+        value_mse = value_mse.masked_fill(~logit_mask, 0)
         value_loss: torch.Tensor = value_mse.sum(dim=1) / denominator  # [B]
         kl_log_ratio = kl_log_probs_selected - new_log_probs_selected
         kl_loss = torch.exp(kl_log_ratio) - kl_log_ratio - 1.0
