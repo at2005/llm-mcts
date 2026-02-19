@@ -16,6 +16,9 @@ use rand::seq::IteratorRandom;
 
 pub struct InferenceClientPool {
     clients: BTreeMap<usize, InferenceClient<Channel>>,
+    get_prompt_timeout: Duration,
+    grader_timeout: Duration,
+    inference_timeout: Duration,
 }
 
 impl InferenceClientPool {
@@ -24,6 +27,25 @@ impl InferenceClientPool {
     pub const STARTUP_RETRY_INTERVAL_MS: u64 = 250;
 
     pub async fn new(num_servers: usize, base_port: usize, start_rank: usize) -> Result<Self> {
+        Self::new_with_timeouts(
+            num_servers,
+            base_port,
+            start_rank,
+            Duration::from_secs(30),
+            Duration::from_secs(30),
+            Duration::from_secs(120),
+        )
+        .await
+    }
+
+    pub async fn new_with_timeouts(
+        num_servers: usize,
+        base_port: usize,
+        start_rank: usize,
+        get_prompt_timeout: Duration,
+        grader_timeout: Duration,
+        inference_timeout: Duration,
+    ) -> Result<Self> {
         let mut clients = BTreeMap::new();
         for i in 0..num_servers {
             let port = base_port + start_rank + i;
@@ -31,7 +53,12 @@ impl InferenceClientPool {
             clients.insert(port, client);
         }
 
-        Ok(Self { clients })
+        Ok(Self {
+            clients,
+            get_prompt_timeout,
+            grader_timeout,
+            inference_timeout,
+        })
     }
 
     pub async fn get_client(port: usize) -> Result<InferenceClient<Channel>> {
@@ -101,7 +128,7 @@ impl InferenceClientPool {
     ) -> Result<Response<GetPromptResponse>> {
         let mut client = self.get_random_client().await?;
         let mut request = Request::new(GetPromptRequest { worker_pool_id });
-        request.set_timeout(std::time::Duration::from_secs(30));
+        request.set_timeout(self.get_prompt_timeout);
         let response = client.get_prompt(request).await?;
         Ok(response)
     }
@@ -117,7 +144,7 @@ impl InferenceClientPool {
             prompt_id,
             state,
         });
-        request.set_timeout(std::time::Duration::from_secs(30));
+        request.set_timeout(self.grader_timeout);
         let mut client = self.get_random_client().await?;
         let response = client.grader(request).await?;
         Ok(response)
@@ -127,7 +154,7 @@ impl InferenceClientPool {
         let mut request = Request::new(InferenceRequest {
             state: state.to_vec(),
         });
-        request.set_timeout(std::time::Duration::from_secs(120));
+        request.set_timeout(self.inference_timeout);
         let response = self.send_request(request).await?.into_inner();
         Ok((response.priors, response.value))
     }

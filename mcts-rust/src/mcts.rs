@@ -162,10 +162,13 @@ impl Tree {
         config: ExperimentConfig,
         worker_id: u32,
     ) -> Result<Self> {
-        let inference_client_pool = InferenceClientPool::new(
+        let inference_client_pool = InferenceClientPool::new_with_timeouts(
             config.num_inference_gpus as usize,
             config.inference_base_port as usize,
             config.inference_start_rank as usize,
+            std::time::Duration::from_millis(config.get_prompt_timeout_ms),
+            std::time::Duration::from_millis(config.grader_timeout_ms),
+            std::time::Duration::from_millis(config.inference_timeout_ms),
         )
         .await?;
         let mut nodes = Vec::with_capacity(MAX_NODES);

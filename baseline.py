@@ -101,7 +101,7 @@ def main():
         max_steps=500,
         logging_steps=1,
         per_device_train_batch_size=config["training_batch_size"] // 2,
-        num_generations=config["topk"],
+        num_generations=config["topk"] * 4,
         # max_prompt_length=config["max_train_seqlen"],
         bf16=True,
         report_to="wandb",
@@ -111,8 +111,7 @@ def main():
         chat_template_kwargs={
         "truncation": True,
         "max_length": 1024,
-    },
-
+        },
     )
 
     trainer = GRPOTrainer(

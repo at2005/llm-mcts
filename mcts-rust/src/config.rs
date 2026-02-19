@@ -30,6 +30,12 @@ pub struct ExperimentConfig {
     pub c_policy_loss: f32,
     pub training_max_wait_ms: u32,
     pub training_max_steps: u32,
+    #[serde(default = "default_get_prompt_timeout_ms")]
+    pub get_prompt_timeout_ms: u64,
+    #[serde(default = "default_grader_timeout_ms")]
+    pub grader_timeout_ms: u64,
+    #[serde(default = "default_inference_timeout_ms")]
+    pub inference_timeout_ms: u64,
     #[serde(default)]
     pub ui_logging_enabled: bool,
     pub value_head_path: String,
@@ -45,4 +51,16 @@ pub fn load_config() -> Result<ExperimentConfig> {
     let config = fs::read_to_string(parent_dir.join("configs/config.json"))?;
     let config: ExperimentConfig = serde_json::from_str(&config)?;
     Ok(config)
+}
+
+fn default_get_prompt_timeout_ms() -> u64 {
+    60_000
+}
+
+fn default_grader_timeout_ms() -> u64 {
+    60_000
+}
+
+fn default_inference_timeout_ms() -> u64 {
+    300_000
 }
