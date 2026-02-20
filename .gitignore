@@ -11,6 +11,8 @@ wheels/
 
 # Rust
 mcts-rust/target/
+target/
+**/target/
 
 logs/
 wandb/
