@@ -1,7 +1,11 @@
+import json
 import re
 import time
+
 from redis import Redis
 from math_verify import parse, verify, LatexExtractionConfig, ExprExtractionConfig
+from simpleeval import simple_eval
+
 
 class Graders:
     def __init__(self):
@@ -12,107 +16,122 @@ class Graders:
         self.format_reward = 0.0
         self._redis_retry_attempts = 3
         self._redis_retry_delay_s = 0.05
-    
+
     def parse_answer(self, answer: str) -> str:
         assistant_marker = "<|start_header_id|>assistant<|end_header_id|>"
         last_assistant_idx = answer.rfind(assistant_marker)
-        if last_assistant_idx != -1:
-            search_text = answer[last_assistant_idx:]
-        else:
-            search_text = answer 
+        search_text = answer[last_assistant_idx:] if last_assistant_idx != -1 else answer
 
         matches = re.findall(r"<answer>(.*?)</answer>", search_text, re.DOTALL)
-        if not matches:
-            return None
-        return matches[-1].strip()
+        return matches[-1].strip() if matches else None
 
     def _normalize_answer_for_parser(self, answer: str) -> str:
-        if answer is None:
-            return None
         normalized = answer.strip()
         if normalized.count("$") == 1:
             normalized = normalized.replace("$", "")
         return normalized
 
-    def maths_grader(self, string_state: str, prompt_id: int) -> float:
-        key = f"correct_answer:{prompt_id}"
+    def _read_redis(self, key: str) -> str:
+        try:
+            value = self.redis.get(key)
+        except Exception as exc:
+            raise RuntimeError(f"Failed to read {key} from Redis") from exc
+        if value is None:
+            return None
+        if isinstance(value, bytes):
+            value = value.decode("utf-8", errors="ignore")
+        return value.strip()
 
-        gold_answer = None
+    def _read_redis_with_retry(self, key: str) -> str:
         for attempt in range(self._redis_retry_attempts + 1):
             try:
-                # print(f"Reading correct answer for prompt {prompt_id} from Redis")
-                gold_answer = self.redis.get(key)
-                # print(f"Correct answer for prompt {prompt_id} from Redis: {gold_answer}")
-            except Exception as e:
-                # print(f"Error reading correct answer for prompt {prompt_id} from Redis: {e}")
-                gold_answer = None
+                value = self.redis.get(key)
+            except Exception:
+                value = None
 
-            if gold_answer is not None:
-                break
+            if value is not None:
+                if isinstance(value, bytes):
+                    value = value.decode("utf-8", errors="ignore")
+                return value.strip()
 
             if attempt < self._redis_retry_attempts:
                 time.sleep(self._redis_retry_delay_s)
+        return None
+
+    def maths_grader(self, string_state: str, prompt_id: int) -> float:
+        key = f"correct_answer:{prompt_id}"
+        gold_answer = self._read_redis_with_retry(key)
 
         if gold_answer is None:
-            # print(f"No correct answer found for prompt {prompt_id}")
             return self._missing_reward
-        if isinstance(gold_answer, bytes):
-            gold_answer = gold_answer.decode("utf-8", errors="ignore")
-        else:
-            gold_answer = str(gold_answer)
 
         model_answer = self.parse_answer(string_state)
         model_answer = self._normalize_answer_for_parser(model_answer)
-        # print(f"Model answer: {model_answer}")
         try:
             extraction = [LatexExtractionConfig()]
             gold = parse(gold_answer, extraction_config=extraction, parsing_timeout=None)
             pred = parse(model_answer, extraction_config=extraction, parsing_timeout=None)
-            # print(f"Gold answer: {gold}")
-            # print(f"Pred answer: {pred}")
             return (
                 self.positive_reward
                 if verify(gold, pred, timeout_seconds=None)
                 else self.negative_reward
             )
-        except Exception as e:
-            # print(f"Error parsing answers: {e}")
+        except Exception:
             return self.negative_reward
 
-
     def gsm8k_grader(self, string_state: str, prompt_id: int) -> float:
-        # print("Running GSM8K grader")
         reward = 0.0
         answer = self.parse_answer(string_state)
         if answer is None:
             return self.negative_reward
-        else:
-            reward += self.format_reward
+        reward += self.format_reward
 
-        try:
-            correct_answer = self.redis.get(f"correct_answer:{prompt_id}")
-            # print(f"Correct answer for prompt {prompt_id} from Redis: {correct_answer}")
-        except Exception as exc:
-            raise RuntimeError(
-                f"Failed to read correct answer for prompt {prompt_id} from Redis"
-            ) from exc
-        
+        correct_answer = self._read_redis(f"correct_answer:{prompt_id}")
         if correct_answer is None:
             raise ValueError(f"Correct answer not found for prompt {prompt_id}")
 
-        if isinstance(correct_answer, bytes):
-            try:
-                correct_answer_str = correct_answer.decode("utf-8").strip()
-            except UnicodeDecodeError as exc:
-                raise ValueError(
-                    f"Correct answer for prompt {prompt_id} is not valid UTF-8"
-                ) from exc
-        else:
-            correct_answer_str = str(correct_answer).strip()
+        correct_answer = str(correct_answer).strip()
 
-        if answer == correct_answer_str:
-            # print(f"Answer is correct for prompt {prompt_id}")
-            return self.positive_reward + reward
-        else:
-            # print(f"Answer is incorrect for prompt {prompt_id}")
+        return (
+            self.positive_reward + reward
+            if answer == correct_answer
+            else self.negative_reward + reward
+        )
+
+    def validate_numbers(self, expression: str, input_numbers: list[int]) -> bool:
+        used_numbers = [int(n) for n in re.findall(r'\d+', expression)]
+        available = list(input_numbers)
+        for n in used_numbers:
+            if n in available:
+                available.remove(n)
+            else:
+                return False
+        return True
+
+    def countdown_grader(self, model_answer: str, prompt_id: int) -> float:
+        reward = 0.0
+        model_expr = self.parse_answer(model_answer)
+        if model_expr is None:
+            return self.negative_reward
+        reward += self.format_reward
+
+        correct_answer = self._read_redis(f"correct_answer:{prompt_id}")
+        input_numbers_raw = self._read_redis(f"input_numbers:{prompt_id}")
+
+        try:
+            correct_answer = int(correct_answer)
+            input_numbers = json.loads(input_numbers_raw)
+        except Exception as exc:
+            raise RuntimeError(
+                f"Failed to process answer data for prompt {prompt_id}"
+            ) from exc
+
+        if not self.validate_numbers(model_expr, input_numbers):
             return self.negative_reward + reward
+
+        answer = simple_eval(model_expr)
+
+        if answer != correct_answer:
+            return self.negative_reward + reward
+
+        return self.positive_reward + reward

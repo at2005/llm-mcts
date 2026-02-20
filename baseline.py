@@ -6,7 +6,7 @@ from datasets import load_dataset
 import json
 import wandb
 import re
-from data import system_prompt
+from data import system_prompt, countdown_system_prompt 
 
 def extract_hash_answer(text):
     """Extract numerical answer from GSM8K format (#### marker)"""

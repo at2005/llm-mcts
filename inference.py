@@ -26,7 +26,7 @@ import torch.nn.functional as F
 import gc
 from redis import Redis
 import json
-from data import get_dataset, system_prompt_message
+from data import get_dataset, system_prompt_message, countdown_system_prompt_message
 from datasets import load_dataset
 from transformers.modeling_utils import load_sharded_checkpoint
 from safetensors.torch import load_file as load_safetensors_file
@@ -299,6 +299,7 @@ class InferenceServicer(inference_pb2_grpc.InferenceServicer):
             port=self.batch_inference_service.config["redis_port"],
             db=self.batch_inference_service.config["redis_db"],
         )
+
         dataset_seed = self.batch_inference_service.config.get("dataset_seed")
         
         # different splits per rank but replicable across jobs 
@@ -324,14 +325,17 @@ class InferenceServicer(inference_pb2_grpc.InferenceServicer):
             reward = self.graders.gsm8k_grader(string_state, prompt_id)
         elif self.dataset_name == "EleutherAI/hendrycks_math":
             reward = self.graders.maths_grader(string_state, prompt_id)
+        elif self.dataset_name == "countdown":
+            reward = self.graders.countdown_grader(string_state, prompt_id)
         return inference_pb2.GraderResponse(reward=reward)
+
 
     def get_prompt(self, request: GetPromptRequest, context):
         _, problem, answer = next(self.maths_dataset)
         prompt_uid = int(self.redis.incr("prompt_uid_counter"))
         answer_to_store = "" if answer is None else str(answer)
         self.redis.set(f"correct_answer:{prompt_uid}", answer_to_store)
-        message = [system_prompt_message, {"role": "user", "content": problem}]
+        message = [system_prompt_message if self.dataset_name != "countdown" else countdown_system_prompt_message, {"role": "user", "content": problem}]
         chat_template = self.batch_inference_service.tokenizer.apply_chat_template(
             message,
             tokenize=False,

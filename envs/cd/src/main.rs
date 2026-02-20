@@ -165,15 +165,10 @@ pub fn create_dataset(output_path: &str, num_samples: u32) {
         .into_par_iter()
         .map(|_| {
             let nums = generate_input_sequence(1, 13, 4);
-            let (target, steps) = generate_sample(nums.clone());
+            let (target, _steps) = generate_sample(nums.clone());
             let data = json!({
                 "target": target,
-                "steps": steps.iter().map(|step| json!({
-                    "a": step.a,
-                    "b": step.b,
-                    "op": step.op.to_string(),
-                    "result": step.result
-                })).collect::<Vec<_>>()
+                "input": nums
             });
             let mut line = data.to_string();
             line.push('\n');
