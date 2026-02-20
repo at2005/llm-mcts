@@ -1,6 +1,7 @@
 #!/bin/bash
 
 sudo apt update
+sudo apt install -y protobuf-compiler
 
 # install cargo/rust toolchain
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh

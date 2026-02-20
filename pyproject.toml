@@ -32,3 +32,5 @@ environments = [
   "sys_platform == 'darwin'",
   "sys_platform == 'linux'",
 ]
+[tool.uv.extra-build-dependencies]
+flash-attn = ["torch"]

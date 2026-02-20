@@ -109,7 +109,7 @@ pub fn create_countdown_target(nums: Vec<u32>) -> (u32, Vec<Step>) {
             }
 
             Action::Divide => {
-                if b == 0 || a % b != 0 {
+                if b == 0 || a % b != 0 || b == 1 {
                     nums.push(a);
                     nums.push(b);
                     continue;
@@ -164,7 +164,7 @@ pub fn create_dataset(output_path: &str, num_samples: u32) {
     let lines: Vec<String> = (0..num_samples)
         .into_par_iter()
         .map(|_| {
-            let nums = generate_input_sequence(1, 100, 6);
+            let nums = generate_input_sequence(1, 13, 4);
             let (target, steps) = generate_sample(nums.clone());
             let data = json!({
                 "target": target,
