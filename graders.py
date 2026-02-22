@@ -1,6 +1,8 @@
 import json
 import re
 import time
+from math import isfinite
+from numbers import Real
 
 from redis import Redis
 from math_verify import parse, verify, LatexExtractionConfig, ExprExtractionConfig
@@ -168,7 +170,15 @@ class Graders:
         except Exception as exc:
             return self.negative_reward + reward
 
-        if answer != correct_answer:
+        if isinstance(answer, bool) or not isinstance(answer, Real):
+            return self.negative_reward + reward
+        if isinstance(answer, float) and not isfinite(answer):
             return self.negative_reward + reward
 
-        return self.positive_reward + reward
+        distance = abs(float(answer) - correct_answer)
+        correct_reward = (
+            self.positive_reward
+            if distance == 0.0
+            else self.negative_reward + (1.0 / (1.0 + distance))
+        )
+        return correct_reward + reward
