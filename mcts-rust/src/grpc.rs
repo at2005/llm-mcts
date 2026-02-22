@@ -16,6 +16,7 @@ use rand::seq::IteratorRandom;
 
 pub struct InferenceClientPool {
     clients: BTreeMap<usize, InferenceClient<Channel>>,
+    infer_client_port: usize,
     get_prompt_timeout: Duration,
     grader_timeout: Duration,
     inference_timeout: Duration,
@@ -27,10 +28,11 @@ impl InferenceClientPool {
     pub const STARTUP_RETRY_INTERVAL_MS: u64 = 250;
 
     pub async fn new(num_servers: usize, base_port: usize, start_rank: usize) -> Result<Self> {
-        Self::new_with_timeouts(
+        Self::new_with_timeouts_for_worker(
             num_servers,
             base_port,
             start_rank,
+            0,
             Duration::from_secs(30),
             Duration::from_secs(30),
             Duration::from_secs(120),
@@ -46,15 +48,45 @@ impl InferenceClientPool {
         grader_timeout: Duration,
         inference_timeout: Duration,
     ) -> Result<Self> {
+        Self::new_with_timeouts_for_worker(
+            num_servers,
+            base_port,
+            start_rank,
+            0,
+            get_prompt_timeout,
+            grader_timeout,
+            inference_timeout,
+        )
+        .await
+    }
+
+    pub async fn new_with_timeouts_for_worker(
+        num_servers: usize,
+        base_port: usize,
+        start_rank: usize,
+        worker_pool_id: u32,
+        get_prompt_timeout: Duration,
+        grader_timeout: Duration,
+        inference_timeout: Duration,
+    ) -> Result<Self> {
         let mut clients = BTreeMap::new();
         for i in 0..num_servers {
             let port = base_port + start_rank + i;
             let client = Self::get_client(port).await?;
             clients.insert(port, client);
         }
+        if clients.is_empty() {
+            anyhow::bail!("no inference clients available");
+        }
+        let infer_client_idx = (worker_pool_id as usize) % clients.len();
+        let infer_client_port = *clients
+            .keys()
+            .nth(infer_client_idx)
+            .expect("infer client index not found");
 
         Ok(Self {
             clients,
+            infer_client_port,
             get_prompt_timeout,
             grader_timeout,
             inference_timeout,
@@ -113,11 +145,20 @@ impl InferenceClientPool {
         Ok(client)
     }
 
+    pub fn get_sticky_infer_client(&self) -> Result<InferenceClient<Channel>> {
+        let client = self
+            .clients
+            .get(&self.infer_client_port)
+            .expect("sticky infer client not found")
+            .clone();
+        Ok(client)
+    }
+
     pub async fn send_request(
         &self,
         request: Request<InferenceRequest>,
     ) -> Result<Response<InferenceResponse>> {
-        let mut client = self.get_random_client().await?;
+        let mut client = self.get_sticky_infer_client()?;
         let response = client.infer(request).await?;
         Ok(response)
     }

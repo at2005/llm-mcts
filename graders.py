@@ -16,6 +16,7 @@ class Graders:
         self.format_reward = 0.0
         self._redis_retry_attempts = 3
         self._redis_retry_delay_s = 0.05
+        self._countdown_prompt_meta_cache = {}
 
     def parse_answer(self, answer: str) -> str:
         assistant_marker = "<|start_header_id|>assistant<|end_header_id|>"
@@ -57,6 +58,34 @@ class Graders:
             if attempt < self._redis_retry_attempts:
                 time.sleep(self._redis_retry_delay_s)
         return None
+
+    def _read_countdown_prompt_meta(self, prompt_id: int):
+        cached_meta = self._countdown_prompt_meta_cache.get(prompt_id)
+        if cached_meta is not None:
+            return cached_meta
+
+        raw_meta = self._read_redis_with_retry(f"countdown_prompt_meta:{prompt_id}")
+        if raw_meta is not None:
+            try:
+                payload = json.loads(raw_meta)
+                correct_answer = payload.get("correct_answer")
+                input_numbers = payload.get("input_numbers")
+                meta = (correct_answer, input_numbers)
+                self._countdown_prompt_meta_cache[prompt_id] = meta
+                return meta
+            except Exception:
+                self._countdown_prompt_meta_cache[prompt_id] = (None, None)
+                return None, None
+
+        correct_answer = self._read_redis_with_retry(f"correct_answer:{prompt_id}")
+        input_numbers_raw = self._read_redis_with_retry(f"input_numbers:{prompt_id}")
+        if correct_answer is None or input_numbers_raw is None:
+            self._countdown_prompt_meta_cache[prompt_id] = (None, None)
+            return None, None
+
+        meta = (correct_answer, input_numbers_raw)
+        self._countdown_prompt_meta_cache[prompt_id] = meta
+        return meta
 
     def maths_grader(self, string_state: str, prompt_id: int) -> float:
         key = f"correct_answer:{prompt_id}"
@@ -115,21 +144,29 @@ class Graders:
             return self.negative_reward
         reward += self.format_reward
 
-        correct_answer = self._read_redis(f"correct_answer:{prompt_id}")
-        input_numbers_raw = self._read_redis(f"input_numbers:{prompt_id}")
+        correct_answer_raw, input_numbers_raw = self._read_countdown_prompt_meta(prompt_id)
 
         try:
-            correct_answer = int(correct_answer)
-            input_numbers = json.loads(input_numbers_raw)
+            if correct_answer_raw is None or input_numbers_raw is None:
+                return self._missing_reward
+            correct_answer = int(correct_answer_raw)
+            if isinstance(input_numbers_raw, str):
+                input_numbers = json.loads(input_numbers_raw)
+            else:
+                input_numbers = input_numbers_raw
         except Exception as exc:
-            raise RuntimeError(
-                f"Failed to process answer data for prompt {prompt_id}"
-            ) from exc
+            return self._missing_reward
 
         if not self.validate_numbers(model_expr, input_numbers):
             return self.negative_reward + reward
 
-        answer = simple_eval(model_expr)
+        try:
+            # start_time = time.time()
+            answer = simple_eval(model_expr)
+            # end_time = time.time()
+            # print(f"Time taken to evaluate expression: {end_time - start_time} seconds")
+        except Exception as exc:
+            return self.negative_reward + reward
 
         if answer != correct_answer:
             return self.negative_reward + reward

@@ -162,10 +162,11 @@ impl Tree {
         config: ExperimentConfig,
         worker_id: u32,
     ) -> Result<Self> {
-        let inference_client_pool = InferenceClientPool::new_with_timeouts(
+        let inference_client_pool = InferenceClientPool::new_with_timeouts_for_worker(
             config.num_inference_gpus as usize,
             config.inference_base_port as usize,
             config.inference_start_rank as usize,
+            worker_id,
             std::time::Duration::from_millis(config.get_prompt_timeout_ms),
             std::time::Duration::from_millis(config.grader_timeout_ms),
             std::time::Duration::from_millis(config.inference_timeout_ms),
@@ -449,12 +450,12 @@ pub async fn greedy_select(con: &mut ConnectionManager, tree: &Tree) -> Result<V
     let node_obj = tree.get_node(node);
     let state = node_obj.state.iter().copied().collect::<Vec<_>>();
 
-    let grader_response = tree
+    let reward = tree
         .inference_client_pool
         .send_grader_request(tree.episode_id, tree.prompt_id, state.clone())
-        .await?;
-
-    let reward = grader_response.into_inner().reward;
+        .await?
+        .into_inner()
+        .reward;
     info!("Reward from grader for greedy selection: {}", reward);
 
     let replay_buffer_entry =

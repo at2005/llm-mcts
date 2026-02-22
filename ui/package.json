@@ -13,6 +13,7 @@
   },
   "dependencies": {
     "@huggingface/tokenizers": "^0.1.1",
+    "concurrently": "^9.2.1",
     "cors": "^2.8.5",
     "dagre": "^0.8.5",
     "express": "^4.21.2",

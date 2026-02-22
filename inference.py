@@ -15,11 +15,10 @@ import sglang as sgl
 from transformers import AutoTokenizer, AutoModelForCausalLM
 from transformers.utils import is_flash_attn_2_available
 from model import ValueHead
-from concurrent.futures import Future
+from concurrent.futures import Future, TimeoutError as FutureTimeoutError
 from graders import Graders
 import time
 import queue
-import re
 import numpy as np
 import torch.nn as nn
 import torch.nn.functional as F
@@ -105,6 +104,10 @@ class BatchInferenceService:
 
         self.rank = rank
         self.max_wait_ms = self.config["inference_max_wait_ms"]
+        self.infer_timeout_ms = self.config.get(
+            "infer_timeout_ms",
+            self.config.get("inference_timeout_ms", 300000),
+        )
         self.batch_size = self.config["inference_batch_size"]
 
         self.per_gpu_queue = queue.Queue()
@@ -229,6 +232,10 @@ class BatchInferenceService:
             )
 
             generated_ids = [output["output_ids"] for output in outputs]
+            # avg_len = (
+            #     sum(len(tokens) for tokens in generated_ids) / len(generated_ids)
+            # )
+            # print(f"Average generated token length: {avg_len:.2f}")
             summed_logprobs, last_hidden_state = self.compute_logprobs(
                 replicated_input_ids, generated_ids
             )
@@ -273,7 +280,6 @@ class BatchInferenceService:
 
             batch_input_ids = [item[0] for item in batch]
             futures = [item[1] for item in batch]
-            # print(f"Rank {self.rank}: Running batch of size {len(batch)}")
 
             try:
                 generated_ids, probabilities, values = self.run_batch(batch_input_ids)
@@ -306,35 +312,85 @@ class InferenceServicer(inference_pb2_grpc.InferenceServicer):
         dataset_seed += self.batch_inference_service.rank
 
         self.dataset_name = self.batch_inference_service.config.get("dataset_name")
-        self.maths_dataset = get_dataset(self.dataset_name, seed=dataset_seed)
+        print(
+            f"Rank {self.batch_inference_service.rank}: dataset_name={self.dataset_name}"
+        )
+        self.dataset = get_dataset(self.dataset_name, seed=dataset_seed)
 
     def infer(self, request: InferenceRequest, context):
         fut = Future()
         state = list(request.state)
         self.batch_inference_service.per_gpu_queue.put((state, fut))
-        policies, values = fut.result(
-            timeout=60 * self.batch_inference_service.max_wait_ms / 1000.0
-        )
+        try:
+            policies, values = fut.result(
+                timeout=self.batch_inference_service.infer_timeout_ms / 1000.0
+            )
+        except FutureTimeoutError:
+            context.abort(
+                grpc.StatusCode.DEADLINE_EXCEEDED,
+                f"infer request timed out after {self.batch_inference_service.infer_timeout_ms}ms",
+            )
         return inference_pb2.InferenceResponse(priors=policies, value=values)
 
     def grader(self, request: GraderRequest, context):
+        # total_start = time.monotonic()
         state = request.state
         prompt_id = request.prompt_id
+        # decode_start = time.monotonic()
         string_state = self.batch_inference_service.tokenizer.decode(state)
+        # print(f"Rank {self.batch_inference_service.rank}: {string_state}")
+        # decode_ms = (time.monotonic() - decode_start) * 1000.0
+
+        # grade_start = time.monotonic()
         if self.dataset_name == "openai/gsm8k":
             reward = self.graders.gsm8k_grader(string_state, prompt_id)
         elif self.dataset_name == "EleutherAI/hendrycks_math":
             reward = self.graders.maths_grader(string_state, prompt_id)
         elif self.dataset_name == "countdown":
             reward = self.graders.countdown_grader(string_state, prompt_id)
+        else:
+            context.abort(
+                grpc.StatusCode.INVALID_ARGUMENT,
+                f"Unsupported dataset_name for grading: {self.dataset_name}",
+            )
+        # grade_ms = (time.monotonic() - grade_start) * 1000.0
+        # total_ms = (time.monotonic() - total_start) * 1000.0
+
+        # print(
+        #     f"Rank {self.batch_inference_service.rank}: "
+        #     f"grader_latency total={total_ms:.2f}ms decode={decode_ms:.2f}ms "
+        #     f"grade={grade_ms:.2f}ms dataset={self.dataset_name} prompt_id={prompt_id}"
+        # )
         return inference_pb2.GraderResponse(reward=reward)
 
 
     def get_prompt(self, request: GetPromptRequest, context):
-        _, problem, answer = next(self.maths_dataset)
+        # total_start = time.monotonic()
+        # fetch_start = time.monotonic()
+        if self.dataset_name == "countdown":
+            _, problem, answer, input_numbers = next(self.dataset)
+        else:
+            _, problem, answer = next(self.dataset)
+        # fetch_ms = (time.monotonic() - fetch_start) * 1000.0
+
+        # redis_start = time.monotonic()
         prompt_uid = int(self.redis.incr("prompt_uid_counter"))
         answer_to_store = "" if answer is None else str(answer)
-        self.redis.set(f"correct_answer:{prompt_uid}", answer_to_store)
+        if self.dataset_name == "countdown":
+            self.redis.set(
+                f"countdown_prompt_meta:{prompt_uid}",
+                json.dumps(
+                    {
+                        "correct_answer": answer_to_store,
+                        "input_numbers": input_numbers,
+                    }
+                ),
+            )
+        else:
+            self.redis.set(f"correct_answer:{prompt_uid}", answer_to_store)
+        # redis_ms = (time.monotonic() - redis_start) * 1000.0
+
+        # prompt_build_start = time.monotonic()
         message = [system_prompt_message if self.dataset_name != "countdown" else countdown_system_prompt_message, {"role": "user", "content": problem}]
         chat_template = self.batch_inference_service.tokenizer.apply_chat_template(
             message,
@@ -342,6 +398,15 @@ class InferenceServicer(inference_pb2_grpc.InferenceServicer):
             add_generation_prompt=True,
         )
         tokenized_ids = self.batch_inference_service.tokenizer.encode(chat_template)
+        # prompt_build_ms = (time.monotonic() - prompt_build_start) * 1000.0
+        # total_ms = (time.monotonic() - total_start) * 1000.0
+
+        # print(
+        #     f"Rank {self.batch_inference_service.rank}: "
+        #     f"get_prompt_latency total={total_ms:.2f}ms fetch={fetch_ms:.2f}ms "
+        #     f"redis={redis_ms:.2f}ms build={prompt_build_ms:.2f}ms "
+        #     f"dataset={self.dataset_name} prompt_id={prompt_uid} tokens={len(tokenized_ids)}"
+        # )
         return inference_pb2.GetPromptResponse(prompt_id=prompt_uid, problem=tokenized_ids)
 
 
@@ -374,6 +439,7 @@ def serve():
     rank = int(os.environ.get("RANK", 0))
     port = int(os.environ.get("PORT", config["inference_base_port"] + rank))
     print(f"Rank {rank}: Starting server on port {port}")
+    print(f"Rank {rank}: Using dataset {config.get('dataset_name')}")
 
     worker = BatchInferenceService(rank, config)
     threading.Thread(target=worker.batch_worker, daemon=True).start()

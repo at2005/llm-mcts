@@ -9,7 +9,6 @@ dependencies = [
   "pybase64>=1.4.3",
   "pydantic>=2.12.5",
   "redis>=7.0.1",
-  "flash-attn==2.8.3",
   "transformers>=4.57.1",
   "pyzmq>=25",
   "datasets>=2.14.4",
@@ -20,6 +19,10 @@ dependencies = [
   "trl>=0.28.0",
   "torch==2.9.1",
   "simpleeval",
+  "ninja>=1.13.0",
+  "executing>=2.2.1",
+  "asttokens>=3.0.1",
+  "flash-attn>=2.8.3",
 ]
 
 [dependency-groups]

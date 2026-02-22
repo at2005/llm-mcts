@@ -3,6 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from model import TrainingModel
 from redis import Redis
+from redis.exceptions import ResponseError
 import time
 import json
 import os
@@ -22,6 +23,20 @@ def resolve_weight_paths(config: dict) -> tuple[str, str]:
     value_path = os.path.join(local_dir, os.path.basename(config["value_head_path"]))
     policy_path = os.path.join(local_dir, os.path.basename(config["policy_head_path"]))
     return value_path, policy_path
+
+
+def ensure_replay_stream_group(redis: Redis, stream_key: str, group_name: str) -> None:
+    """Idempotently ensure redis stream and consumer group are present."""
+    try:
+        redis.xgroup_create(stream_key, group_name, id="0", mkstream=True)
+    except ResponseError as e:
+        message = str(e).lower()
+        if "busygroup" in message or "already exists" in message:
+            return
+        if "no such key" in message:
+            redis.xgroup_create(stream_key, group_name, id="0", mkstream=True)
+            return
+        raise
 
 
 def publish_weights(
@@ -231,16 +246,12 @@ def train(config: dict, redis: Redis, rank: int):
     is_rank0 = rank == 0
     global_step = 0
     if is_rank0:
-        wandb.init(project="mcts-language-model", name="qwen1.5b-gsm8k", config=config)
+        wandb.init(project="mcts-language-model", name="qwen1.5b-countdown", config=config)
 
     stream_key = "replay_buffer"
     group_name = "trainers"
     consumer_name = f"consumer_{rank}"
-    if is_rank0:
-        try:
-            redis.xgroup_create(stream_key, group_name, id="0", mkstream=True)
-        except Exception:
-            print(f"Group {group_name} already exists")
+    ensure_replay_stream_group(redis, stream_key, group_name)
     dist.barrier()
 
     try:
@@ -252,20 +263,20 @@ def train(config: dict, redis: Redis, rank: int):
             state_batch = []
             generated_lengths_batch = []
 
-            deadline = time.monotonic() + (max_wait_ms / 1000.0)
-
             while len(reward_batch) < train_batch_size:
-                timeout = deadline - time.monotonic()
-                if timeout <= 0 and len(reward_batch) > 0:
-                    break
-
-                # print(f"Rank {rank}: Waiting for data from replay buffer")
-                resp = redis.xreadgroup(
-                    group_name, consumer_name,
-                    {stream_key: ">"},
-                    count=1,
-                    block=int(max(timeout * 1000, 10)),
-                )
+                try:
+                    resp = redis.xreadgroup(
+                        group_name, consumer_name,
+                        {stream_key: ">"},
+                        count=1,
+                        block=max_wait_ms,
+                    )
+                except ResponseError as e:
+                    msg = str(e).lower()
+                    if "no such key" in msg or "no such consumer group" in msg:
+                        ensure_replay_stream_group(redis, stream_key, group_name)
+                        continue
+                    raise
                 if not resp:
                     continue
 

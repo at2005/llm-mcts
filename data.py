@@ -3,7 +3,9 @@ from torch.utils.data import DataLoader, Dataset
 from redis import Redis
 import re
 from typing import Optional
+from transformers import AutoTokenizer
 import json
+import random
 
 system_prompt = """You are a mathematics reasoning assistant. Your job is to solve math problems correctly and clearly.
 OUTPUT FORMAT (strict):
@@ -56,9 +58,10 @@ def get_dataset(dataset_name: str, seed: Optional[int] = None):
     elif dataset_name == "EleutherAI/hendrycks_math":
         return MATHDataset(load_dataset(dataset_name, "algebra", split="train"), seed=seed)
     elif dataset_name == "countdown":
-        return CountdownDataset(load_dataset(dataset_name, "main", split="train"), seed=seed)
+        return CountdownDataset(seed=seed)
     else:
         raise ValueError(f"Unknown dataset: {dataset_name}")
+
 
 
 class CountdownDataset(Dataset):
@@ -66,11 +69,15 @@ class CountdownDataset(Dataset):
         self.ds = []
         self._redis = None
         self._idx = 0
-        with open("dataset.json", "r") as f:
+        with open("envs/cd/dataset.json", "r") as f:
             lines = f.readlines()
             for line in lines:
                 data = json.loads(line)
                 self.ds.append(data)
+        
+        if seed is not None:
+            rng = random.Random(seed)
+            rng.shuffle(self.ds)
     
     @property
     def redis(self):
@@ -89,14 +96,14 @@ class CountdownDataset(Dataset):
         in_seq = item["input"]
         target = item["target"]
         problem = self._build_problem(in_seq, target)
-        return idx, problem, target
+        return idx, problem, target, in_seq
     
     def __next__(self):
         if self._idx >= len(self):
-            raise StopIteration
-        idx, problem, target = self[self._idx]
+            self._idx = 0
+        idx, problem, target, in_seq = self[self._idx]
         self._idx += 1
-        return idx, problem, target
+        return idx, problem, target, in_seq
     
     def __iter__(self):
         return self

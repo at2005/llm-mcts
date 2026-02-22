@@ -157,14 +157,14 @@ pub fn generate_sample(nums: Vec<u32>) -> (u32, Vec<Step>) {
     return (min_target, steps);
 }
 
-pub fn create_dataset(output_path: &str, num_samples: u32) {
+pub fn create_dataset(output_path: &str, num_samples: u32, lower_bound: u32, upper_bound: u32, n: u32) {
     let json_file = File::create(output_path).unwrap();
     let mut writer = BufWriter::new(json_file);
 
     let lines: Vec<String> = (0..num_samples)
         .into_par_iter()
         .map(|_| {
-            let nums = generate_input_sequence(1, 13, 4);
+            let nums = generate_input_sequence(lower_bound, upper_bound, n);
             let (target, _steps) = generate_sample(nums.clone());
             let data = json!({
                 "target": target,
@@ -193,6 +193,9 @@ pub fn generate_input_sequence(lb: u32, ub: u32, n: u32) -> Vec<u32> {
 fn main() {
     let mut output_path = String::from("dataset.json");
     let mut num_samples: u32 = 10_000;
+    let mut lower_bound: u32 = 1;
+    let mut upper_bound: u32 = 13;
+    let mut n: u32 = 4;
 
     let mut args = env::args().skip(1).peekable();
     while let Some(arg) = args.next() {
@@ -205,7 +208,7 @@ fn main() {
                     std::process::exit(1);
                 }
             }
-            "--samples" | "--count" | "-n" => {
+            "--samples" | "--count" | "-c" => {
                 if let Some(v) = args.next() {
                     match v.parse::<u32>() {
                         Ok(n) => num_samples = n,
@@ -219,6 +222,52 @@ fn main() {
                     std::process::exit(1);
                 }
             }
+
+            "--lower-bound" | "-lb" => {
+                if let Some(v) = args.next() {
+                    match v.parse::<u32>() {
+                        Ok(n) => lower_bound = n,
+                        Err(_) => {
+                            eprintln!("--lower-bound expects a positive integer, got '{}'", v);
+                            std::process::exit(1);
+                        }
+                    }
+                } else {
+                    eprintln!("--lower-bound expects a value");
+                    std::process::exit(1);
+                }
+            }
+
+            "--upper-bound" | "-ub" => {
+                if let Some(v) = args.next() {
+                    match v.parse::<u32>() {
+                        Ok(n) => upper_bound = n,
+                        Err(_) => {
+                            eprintln!("--upper-bound expects a positive integer, got '{}'", v);
+                            std::process::exit(1);
+                        }
+                    }
+                } else {
+                    eprintln!("--upper-bound expects a value");
+                    std::process::exit(1);
+                }
+            }
+
+            "--num-elements" | "-n" => {
+                if let Some(v) = args.next() {
+                    match v.parse::<u32>() {
+                        Ok(num_elements) => n = num_elements,
+                        Err(_) => {
+                            eprintln!("--n expects a positive integer, got '{}'", v);
+                            std::process::exit(1);
+                        }
+                    }
+                } else {
+                    eprintln!("--n expects a value");
+                    std::process::exit(1);
+                }
+            }
+
             "--help" | "-h" => {
                 println!("Usage: cargo run -- [--output <file>] [--samples <n>]");
                 return;
@@ -231,5 +280,5 @@ fn main() {
         }
     }
 
-    create_dataset(&output_path, num_samples);
+    create_dataset(&output_path, num_samples, lower_bound, upper_bound, n);
 }
