@@ -28,7 +28,7 @@ def get_test_dataset(config):
 
 
 def _generate_with_sglang(llm, tokenizer, prompts, config):
-    temperature = float(config.get("eval_temperature", 0.0))
+    temperature = float(config.get("eval_temperature", 0.2))
     sampling_params = {
         "max_new_tokens": int(config.get("eval_max_new_tokens", 1024)),
         "temperature": temperature,
@@ -71,7 +71,12 @@ def eval_countdown(_model, test_dataset, grader, config, llm=None, tokenizer=Non
     tokenizer.pad_token = tokenizer.eos_token
 
     prompts = [sample["model_input"] for sample in test_dataset]
-    decoded_responses = _generate_with_sglang(llm, tokenizer, prompts, config)
+    prompts_eval_group = [
+        prompt
+        for prompt in prompts
+        for _ in range(config.get("eval_mean_at_k", 1))
+    ]
+    decoded_responses = _generate_with_sglang(llm, tokenizer, prompts_eval_group, config)
 
     rewards = []
     for response, sample in zip(decoded_responses, test_dataset):

@@ -29,7 +29,6 @@
     "virtual_loss": 1,
     "eos_token_id": 151645,
     "sampling_temperature": 0.8,
-    "eval_temperature": 0.0,
     "stop_phrase": "<|end_step|>",
     "c_value_loss": 1.0,
     "c_policy_loss": 1.0,
@@ -46,5 +45,9 @@
     "max_grad_norm": 0.1,
     "update_interval": 2,
     "max_train_seqlen": 1024,
-    "wandb_eval_enabled": true
+    "wandb_eval_enabled": true,
+    "eval_mean_at_k": 16,
+    "eval_generation_batch_size": 8,
+    "eval_max_new_tokens": 1024,
+    "eval_temperature": 0.2
 }
