@@ -2,17 +2,21 @@
 import sys
 import traceback
 
+
 def main():
     import torch
+
     print("torch:", torch.__version__)
 
     import transformers
+
     print("transformers:", transformers.__version__)
 
     # ---- 1) Import + call flash-attn2 directly ----
     try:
         import flash_attn
         from flash_attn.flash_attn_interface import flash_attn_func
+
         print("flash_attn:", getattr(flash_attn, "__version__", "unknown"))
     except Exception as e:
         print("❌ Failed to import flash_attn / flash_attn_func:", repr(e))
@@ -31,7 +35,12 @@ def main():
         k = torch.randn(2, 16, 4, 64, device=device, dtype=torch.float16)
         v = torch.randn(2, 16, 4, 64, device=device, dtype=torch.float16)
         out = flash_attn_func(q, k, v, dropout_p=0.0, causal=True)
-        print("✅ flash_attn_func OK:", tuple(out.shape), "finite:", bool(torch.isfinite(out).all()))
+        print(
+            "✅ flash_attn_func OK:",
+            tuple(out.shape),
+            "finite:",
+            bool(torch.isfinite(out).all()),
+        )
     except Exception:
         print("❌ flash_attn_func call failed:")
         traceback.print_exc()
@@ -65,8 +74,12 @@ def main():
         with torch.no_grad():
             logits = model(input_ids).logits
 
-        print("✅ transformers flash_attention_2 forward OK:",
-              tuple(logits.shape), "finite:", bool(torch.isfinite(logits).all()))
+        print(
+            "✅ transformers flash_attention_2 forward OK:",
+            tuple(logits.shape),
+            "finite:",
+            bool(torch.isfinite(logits).all()),
+        )
     except Exception:
         print("❌ Transformers flash_attention_2 path failed:")
         traceback.print_exc()
@@ -74,6 +87,7 @@ def main():
 
     print("\n🎉 All checks passed.")
     return 0
+
 
 if __name__ == "__main__":
     raise SystemExit(main())

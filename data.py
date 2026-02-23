@@ -53,14 +53,17 @@ def parse_after_hashes(text: str) -> Optional[str]:
 
 def get_dataset(dataset_name: str, seed: Optional[int] = None):
     if dataset_name == "openai/gsm8k":
-        return GSM8KMathsDataset(load_dataset(dataset_name, "main", split="train"), seed=seed)
+        return GSM8KMathsDataset(
+            load_dataset(dataset_name, "main", split="train"), seed=seed
+        )
     elif dataset_name == "EleutherAI/hendrycks_math":
-        return MATHDataset(load_dataset(dataset_name, "algebra", split="train"), seed=seed)
+        return MATHDataset(
+            load_dataset(dataset_name, "algebra", split="train"), seed=seed
+        )
     elif dataset_name == "countdown":
         return CountdownDataset(seed=seed)
     else:
         raise ValueError(f"Unknown dataset: {dataset_name}")
-
 
 
 class CountdownDataset(Dataset):
@@ -73,11 +76,11 @@ class CountdownDataset(Dataset):
             for line in lines:
                 data = json.loads(line)
                 self.ds.append(data)
-        
+
         if seed is not None:
             rng = random.Random(seed)
             rng.shuffle(self.ds)
-    
+
     @property
     def redis(self):
         if self._redis is None:
@@ -89,21 +92,21 @@ class CountdownDataset(Dataset):
 
     def __len__(self):
         return len(self.ds)
-    
+
     def __getitem__(self, idx):
         item = self.ds[idx]
         in_seq = item["input"]
         target = item["target"]
         problem = self._build_problem(in_seq, target)
         return idx, problem, target, in_seq
-    
+
     def __next__(self):
         if self._idx >= len(self):
             self._idx = 0
         idx, problem, target, in_seq = self[self._idx]
         self._idx += 1
         return idx, problem, target, in_seq
-    
+
     def __iter__(self):
         return self
 
@@ -124,13 +127,13 @@ class MATHDataset(Dataset):
 
     def __len__(self):
         return len(self.ds)
-    
+
     def __getitem__(self, idx):
         item = self.ds[idx]
         problem = item["problem"]
         answer = item["solution"]
         return idx, problem, answer
-    
+
     def __next__(self):
         if self._idx >= len(self):
             self._idx = 0
@@ -140,6 +143,7 @@ class MATHDataset(Dataset):
 
     def __iter__(self):
         return self
+
 
 class GSM8KMathsDataset(Dataset):
     def __init__(self, ds, seed: Optional[int] = None):

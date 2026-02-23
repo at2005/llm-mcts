@@ -6,7 +6,8 @@ from datasets import load_dataset
 import json
 import wandb
 import re
-from data import system_prompt, countdown_system_prompt 
+from data import system_prompt, countdown_system_prompt
+
 
 def extract_hash_answer(text):
     """Extract numerical answer from GSM8K format (#### marker)"""
@@ -19,12 +20,12 @@ def extract_hash_answer(text):
 def process_dataset_example(example):
     question = example["question"]
     answer = extract_hash_answer(example["answer"])
-    
+
     prompt = [
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": question},
     ]
-    
+
     return {
         "prompt": prompt,
         "answer": answer,
@@ -36,6 +37,7 @@ def extract_final_number(text: str):
     if not m:
         return None
     return m.group(1).strip()
+
 
 def reward_func(completions, answer=None, **kwargs):
     if answer is None:
@@ -55,12 +57,11 @@ def reward_func(completions, answer=None, **kwargs):
         gold_norm = str(gold).replace(",", "").strip()
 
         if pred_norm == gold_norm:
-            rewards.append(1.1)   # 0.1 format + 1.0 correct
+            rewards.append(1.1)  # 0.1 format + 1.0 correct
         else:
             rewards.append(-0.9)  # 0.1 format - 1.0 incorrect
 
     return rewards
-
 
 
 def main():
@@ -84,17 +85,20 @@ def main():
     )
 
     model.train()
-    
+
     if int(os.environ.get("RANK", "0")) == 0:
-        wandb.init(project="mcts-language-model", name="grpo-baseline-qwen1.5b-countdown", config={
-            "model_name": config["model_name"],
-            "dataset_name": config["dataset_name"],
-            "group_size": config["topk"],
-            "per_device_train_batch_size": config["training_batch_size"] // 2,
-        })
+        wandb.init(
+            project="mcts-language-model",
+            name="grpo-baseline-qwen1.5b-countdown",
+            config={
+                "model_name": config["model_name"],
+                "dataset_name": config["dataset_name"],
+                "group_size": config["topk"],
+                "per_device_train_batch_size": config["training_batch_size"] // 2,
+            },
+        )
     else:
         os.environ["WANDB_MODE"] = "disabled"
-
 
     training_args = GRPOConfig(
         learning_rate=5e-6,
@@ -109,8 +113,8 @@ def main():
         max_completion_length=1024,
         max_grad_norm=0.1,
         chat_template_kwargs={
-        "truncation": True,
-        "max_length": 1024,
+            "truncation": True,
+            "max_length": 1024,
         },
     )
 
@@ -124,6 +128,7 @@ def main():
 
     trainer.train()
     wandb.finish()
+
 
 if __name__ == "__main__":
     main()

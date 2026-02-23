@@ -27,9 +27,7 @@ class TrainingModel(nn.Module):
         self.config = config
         self.model_name = self.config["model_name"]
         self.value_norm = nn.LayerNorm(config["hidden_size"]).to(torch.bfloat16)
-        attn_impl = (
-            "flash_attention_2" if is_flash_attn_2_available() else "sdpa"
-        )
+        attn_impl = "flash_attention_2" if is_flash_attn_2_available() else "sdpa"
         if attn_impl != "flash_attention_2":
             print(
                 "Warning: FlashAttention2 not available for training HF model; falling back to SDPA."
@@ -58,6 +56,8 @@ class TrainingModel(nn.Module):
             logits = self.model.lm_head(hidden_states)
 
         with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
-            value = self.value_head(self.value_norm(hidden_states)).squeeze(-1)  # [B, T]
+            value = self.value_head(self.value_norm(hidden_states)).squeeze(
+                -1
+            )  # [B, T]
 
         return logits, value  # [batch_size, vocab_size], [batch_size]

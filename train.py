@@ -11,12 +11,14 @@ import shutil
 import wandb
 from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
 from torch.distributed.fsdp.wrap import transformer_auto_wrap_policy
+
 # from transformers.models.llama.modeling_llama import LlamaDecoderLayer
 from transformers.models.qwen2.modeling_qwen2 import Qwen2DecoderLayer
 from transformers import get_scheduler
 import functools
 from tqdm import trange
 import torch.distributed as dist
+
 
 def resolve_weight_paths(config: dict) -> tuple[str, str]:
     local_dir = config.get("weights_local_dir", "/tmp/llm-mcts-weights")
@@ -40,14 +42,10 @@ def ensure_replay_stream_group(redis: Redis, stream_key: str, group_name: str) -
         raise
 
 
-def publish_weights(
-    redis: Redis, model: FSDP, base_model: TrainingModel, config: dict
-):
+def publish_weights(redis: Redis, model: FSDP, base_model: TrainingModel, config: dict):
     value_path, policy_path = resolve_weight_paths(config)
     value_dir = os.path.dirname(os.path.abspath(value_path)) or "."
-    tmp_value_path = os.path.join(
-        value_dir, f".{os.path.basename(value_path)}.tmp"
-    )
+    tmp_value_path = os.path.join(value_dir, f".{os.path.basename(value_path)}.tmp")
     policy_dir = os.path.abspath(policy_path)
     tmp_policy_dir = f"{policy_dir}.tmp"
     backup_policy_dir = f"{policy_dir}.bak"
@@ -149,22 +147,26 @@ def ppo_step(
         # select for generated tokens, guaranteed to have no padding since we use left padding
         log_probs_selected = log_probs_selected.masked_fill(~logit_mask, 0)
 
-        advantage: torch.Tensor = reward.unsqueeze(-1) - values.detach() # [B, T]
+        advantage: torch.Tensor = reward.unsqueeze(-1) - values.detach()  # [B, T]
         advantage = advantage.masked_fill(~logit_mask, 0)
 
         kl_logits, _ = kl_model(input_ids, attention_mask)
-        kl_selected_logits = kl_logits.gather(dim=-1, index=targets.unsqueeze(-1)).squeeze(-1)
+        kl_selected_logits = kl_logits.gather(
+            dim=-1, index=targets.unsqueeze(-1)
+        ).squeeze(-1)
         kl_log_norm = torch.logsumexp(kl_logits, dim=-1)
         kl_log_probs_selected = kl_selected_logits - kl_log_norm
         kl_log_probs_selected = kl_log_probs_selected.masked_fill(~logit_mask, 0)
 
-
-
-    for _ in trange(num_ppo_inner_steps, desc="PPO inner steps", disable=not log_metrics):
+    for _ in trange(
+        num_ppo_inner_steps, desc="PPO inner steps", disable=not log_metrics
+    ):
         new_logits, new_values = model(input_ids, attention_mask)
         new_selected_logits = new_logits.gather(
             dim=-1, index=targets.unsqueeze(-1)
-        ).squeeze(-1)  # [B, T]
+        ).squeeze(
+            -1
+        )  # [B, T]
         new_log_norm = torch.logsumexp(new_logits, dim=-1)
         new_log_probs_selected = new_selected_logits - new_log_norm
 
@@ -196,13 +198,16 @@ def ppo_step(
         kl_loss = kl_loss.mean()
 
         total_loss: torch.Tensor = (
-            c_value_loss * value_loss + c_policy_loss * policy_loss + c_kl_loss * kl_loss
+            c_value_loss * value_loss
+            + c_policy_loss * policy_loss
+            + c_kl_loss * kl_loss
         )
-
 
         optimizer.zero_grad(set_to_none=True)
         total_loss.backward()
-        grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), config["max_grad_norm"])
+        grad_norm = torch.nn.utils.clip_grad_norm_(
+            model.parameters(), config["max_grad_norm"]
+        )
 
         if log_metrics:
             wandb.log(
@@ -239,7 +244,9 @@ def train(config: dict, redis: Redis, rank: int):
     max_wait_ms = config["training_max_wait_ms"]
     max_train_seqlen = config["max_train_seqlen"]
 
-    optimizer = torch.optim.AdamW(model.parameters(), lr=config["learning_rate"], fused=True)
+    optimizer = torch.optim.AdamW(
+        model.parameters(), lr=config["learning_rate"], fused=True
+    )
     lr_warmup_steps = int(config.get("lr_warmup_steps", 0))
     scheduler = get_scheduler(
         name="linear",
@@ -253,7 +260,9 @@ def train(config: dict, redis: Redis, rank: int):
     is_rank0 = rank == 0
     global_step = 0
     if is_rank0:
-        wandb.init(project="mcts-language-model", name="qwen1.5b-countdown", config=config)
+        wandb.init(
+            project="mcts-language-model", name="qwen1.5b-countdown", config=config
+        )
 
     stream_key = "replay_buffer"
     group_name = "trainers"
@@ -261,12 +270,11 @@ def train(config: dict, redis: Redis, rank: int):
     ensure_replay_stream_group(redis, stream_key, group_name)
     dist.barrier()
 
-
     try:
         while global_step < max_steps:
             if (global_step + 1) % config["update_interval"] == 0:
                 publish_weights(redis, model, base_model, config)
-            
+
             reward_batch = []
             state_batch = []
             generated_lengths_batch = []
@@ -274,7 +282,8 @@ def train(config: dict, redis: Redis, rank: int):
             while len(reward_batch) < train_batch_size:
                 try:
                     resp = redis.xreadgroup(
-                        group_name, consumer_name,
+                        group_name,
+                        consumer_name,
                         {stream_key: ">"},
                         count=1,
                         block=max_wait_ms,
@@ -300,7 +309,9 @@ def train(config: dict, redis: Redis, rank: int):
                     num_generated_tokens = max_train_seqlen - num_prompt_tokens
                     state = state[:max_train_seqlen]
 
-                reward_batch.append(torch.tensor(reward, dtype=torch.bfloat16).to(device))
+                reward_batch.append(
+                    torch.tensor(reward, dtype=torch.bfloat16).to(device)
+                )
                 state_batch.append(state)
                 generated_lengths_batch.append(num_generated_tokens)
 

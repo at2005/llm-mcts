@@ -15,7 +15,9 @@ def resolve_weight_paths(config: dict) -> tuple[str, str]:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Chat with the latest fine-tuned checkpoint")
+    parser = argparse.ArgumentParser(
+        description="Chat with the latest fine-tuned checkpoint"
+    )
     parser.add_argument("--config", default="configs/config.json")
     parser.add_argument(
         "--checkpoint-path",

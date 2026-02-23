@@ -3,6 +3,7 @@ from transformers import AutoTokenizer
 
 from baseline_countdown import load_countdown_dataset, process_dataset_example
 
+
 def build_sample(sample, tokenizer):
     prompt = process_dataset_example(sample)["prompt"]
     input_numbers = sample.get("input_numbers")
@@ -19,6 +20,7 @@ def build_sample(sample, tokenizer):
         "target": sample.get("target"),
         "input_numbers": input_numbers,
     }
+
 
 def get_test_dataset(config):
     tokenizer = AutoTokenizer.from_pretrained(config["tokenizer_name"])
@@ -72,11 +74,11 @@ def eval_countdown(_model, test_dataset, grader, config, llm=None, tokenizer=Non
 
     prompts = [sample["model_input"] for sample in test_dataset]
     prompts_eval_group = [
-        prompt
-        for prompt in prompts
-        for _ in range(config.get("eval_mean_at_k", 1))
+        prompt for prompt in prompts for _ in range(config.get("eval_mean_at_k", 1))
     ]
-    decoded_responses = _generate_with_sglang(llm, tokenizer, prompts_eval_group, config)
+    decoded_responses = _generate_with_sglang(
+        llm, tokenizer, prompts_eval_group, config
+    )
 
     rewards = []
     for response, sample in zip(decoded_responses, test_dataset):

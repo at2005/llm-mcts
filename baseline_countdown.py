@@ -8,6 +8,7 @@ import wandb
 from data import countdown_system_prompt
 from graders import Graders
 
+
 def process_dataset_example(example):
     input_numbers = [int(n) for n in example["input"]]
     target = int(example["target"])
@@ -49,7 +50,9 @@ def reward_func(completions, target=None, input_numbers=None, **kwargs):
     rewards = []
     for comp, gold_target, numbers in zip(completions, target, input_numbers):
         text = comp[0]["content"] if isinstance(comp, list) else comp
-        reward = grader.countdown_reward_func(text, int(gold_target), [int(n) for n in numbers])
+        reward = grader.countdown_reward_func(
+            text, int(gold_target), [int(n) for n in numbers]
+        )
         rewards.append(reward)
     return rewards
 
@@ -75,17 +78,20 @@ def main():
     )
 
     model.train()
-    
+
     if int(os.environ.get("RANK", "0")) == 0:
-        wandb.init(project="mcts-language-model", name="grpo-baseline-qwen1.5b-countdown", config={
-            "model_name": config["model_name"],
-            "dataset_name": config["dataset_name"],
-            "group_size": config["topk"],
-            "per_device_train_batch_size": config["training_batch_size"] // 2,
-        })
+        wandb.init(
+            project="mcts-language-model",
+            name="grpo-baseline-qwen1.5b-countdown",
+            config={
+                "model_name": config["model_name"],
+                "dataset_name": config["dataset_name"],
+                "group_size": config["topk"],
+                "per_device_train_batch_size": config["training_batch_size"] // 2,
+            },
+        )
     else:
         os.environ["WANDB_MODE"] = "disabled"
-
 
     training_args = GRPOConfig(
         learning_rate=5e-6,
@@ -100,8 +106,8 @@ def main():
         max_completion_length=1024,
         max_grad_norm=0.1,
         chat_template_kwargs={
-        "truncation": True,
-        "max_length": 1024,
+            "truncation": True,
+            "max_length": 1024,
         },
     )
 
@@ -115,6 +121,7 @@ def main():
 
     trainer.train()
     wandb.finish()
+
 
 if __name__ == "__main__":
     main()

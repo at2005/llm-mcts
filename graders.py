@@ -6,6 +6,7 @@ from numbers import Real
 from redis import Redis
 from simpleeval import simple_eval
 
+
 class Graders:
     def __init__(self):
         self.redis = Redis(host="localhost", port=6379, db=0)
@@ -20,7 +21,9 @@ class Graders:
     def parse_answer(self, answer: str) -> str:
         assistant_marker = "<|start_header_id|>assistant<|end_header_id|>"
         last_assistant_idx = answer.rfind(assistant_marker)
-        search_text = answer[last_assistant_idx:] if last_assistant_idx != -1 else answer
+        search_text = (
+            answer[last_assistant_idx:] if last_assistant_idx != -1 else answer
+        )
 
         matches = re.findall(r"<answer>(.*?)</answer>", search_text, re.DOTALL)
         return matches[-1].strip() if matches else None
@@ -100,7 +103,7 @@ class Graders:
         )
 
     def validate_numbers(self, expression: str, input_numbers: list[int]) -> bool:
-        used_numbers = [int(n) for n in re.findall(r'\d+', expression)]
+        used_numbers = [int(n) for n in re.findall(r"\d+", expression)]
         available = list(input_numbers)
         for n in used_numbers:
             if n in available:
@@ -110,7 +113,9 @@ class Graders:
         return True
 
     def get_countdown_prompt_metadata(self, prompt_id: int) -> tuple[int, list[int]]:
-        correct_answer_raw, input_numbers_raw = self._read_countdown_prompt_meta(prompt_id)
+        correct_answer_raw, input_numbers_raw = self._read_countdown_prompt_meta(
+            prompt_id
+        )
         try:
             if correct_answer_raw is None or input_numbers_raw is None:
                 return self._missing_reward
@@ -124,7 +129,13 @@ class Graders:
 
         return correct_answer, input_numbers
 
-    def countdown_reward_func(self, model_answer: str, correct_answer: int, input_numbers: list[int], dense_rewards: bool = False) -> float:
+    def countdown_reward_func(
+        self,
+        model_answer: str,
+        correct_answer: int,
+        input_numbers: list[int],
+        dense_rewards: bool = False,
+    ) -> float:
         reward = 0.0
         sparse_fail_reward = 0.0
         model_expr = self.parse_answer(model_answer)
@@ -133,27 +144,41 @@ class Graders:
         reward += self.format_reward
 
         if not self.validate_numbers(model_expr, input_numbers):
-            return self.negative_reward + reward if dense_rewards else sparse_fail_reward
+            return (
+                self.negative_reward + reward if dense_rewards else sparse_fail_reward
+            )
 
         try:
             answer = simple_eval(model_expr)
         except Exception as exc:
-            return self.negative_reward + reward if dense_rewards else sparse_fail_reward
+            return (
+                self.negative_reward + reward if dense_rewards else sparse_fail_reward
+            )
 
         if isinstance(answer, bool) or not isinstance(answer, Real):
-            return self.negative_reward + reward if dense_rewards else sparse_fail_reward
+            return (
+                self.negative_reward + reward if dense_rewards else sparse_fail_reward
+            )
         if isinstance(answer, float) and not isfinite(answer):
-            return self.negative_reward + reward if dense_rewards else sparse_fail_reward
+            return (
+                self.negative_reward + reward if dense_rewards else sparse_fail_reward
+            )
 
         distance = abs(float(answer) - correct_answer)
 
         if not dense_rewards:
             return float(distance == 0)
 
-        correct_reward = self.positive_reward - self.format_reward - min(distance / correct_answer, 1.0) * 2.0
+        correct_reward = (
+            self.positive_reward
+            - self.format_reward
+            - min(distance / correct_answer, 1.0) * 2.0
+        )
         return correct_reward + reward
 
-    def countdown_grader(self, model_answer: str, prompt_id: int, dense_rewards: bool = False) -> float:
+    def countdown_grader(
+        self, model_answer: str, prompt_id: int, dense_rewards: bool = False
+    ) -> float:
         correct_answer, input_numbers = self.get_countdown_prompt_metadata(prompt_id)
         if correct_answer is None or input_numbers is None:
             return self._missing_reward

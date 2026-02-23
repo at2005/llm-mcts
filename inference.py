@@ -40,7 +40,9 @@ def resolve_weight_paths(config: dict) -> tuple[str, str]:
     return value_path, policy_path
 
 
-def load_policy_checkpoint(model: AutoModelForCausalLM, checkpoint_path: str, strict: bool) -> None:
+def load_policy_checkpoint(
+    model: AutoModelForCausalLM, checkpoint_path: str, strict: bool
+) -> None:
     # support both sharded HF checkpoints and a single-file save_pretrained result
     safe_index = os.path.join(checkpoint_path, "model.safetensors.index.json")
     bin_index = os.path.join(checkpoint_path, "pytorch_model.bin.index.json")
@@ -89,9 +91,7 @@ class BatchInferenceService:
             mem_fraction_static=0.5,
             chunked_prefill_size=1024,
         )
-        attn_impl = (
-            "flash_attention_2" if is_flash_attn_2_available() else "sdpa"
-        )
+        attn_impl = "flash_attention_2" if is_flash_attn_2_available() else "sdpa"
         if attn_impl != "flash_attention_2":
             print(
                 f"Rank {rank}: Warning: FlashAttention2 not available for HF scorer model; falling back to SDPA."
@@ -138,7 +138,9 @@ class BatchInferenceService:
             if self.wandb_eval_enabled:
                 wandb.init(
                     project=self.config.get("wandb_project", "mcts-language-model"),
-                    name=self.config.get("wandb_eval_run_name", f"inference-eval-rank-{rank}"),
+                    name=self.config.get(
+                        "wandb_eval_run_name", f"inference-eval-rank-{rank}"
+                    ),
                     config={
                         "model_name": self.config.get("model_name"),
                         "dataset_name": self.config.get("dataset_name"),
@@ -157,16 +159,19 @@ class BatchInferenceService:
                 self.value_head.load_state_dict(state_dict)
                 update_result = self.llm.update_weights_from_disk(policy_path)
                 if isinstance(update_result, (tuple, list)):
-                    update_ok = bool(update_result[0]) if len(update_result) > 0 else False
+                    update_ok = (
+                        bool(update_result[0]) if len(update_result) > 0 else False
+                    )
                     update_msg = str(update_result[1]) if len(update_result) > 1 else ""
                 else:
                     update_ok = bool(update_result)
                     update_msg = ""
                 if not update_ok:
-                    raise RuntimeError(
-                        f"SGLang weight update failed: {update_msg}"
-                    )
-                if self.config["model_name"] == "meta-llama/Llama-3.2-1B-Instruct" or self.config["model_name"] == "Qwen/Qwen2.5-0.5B-Instruct":
+                    raise RuntimeError(f"SGLang weight update failed: {update_msg}")
+                if (
+                    self.config["model_name"] == "meta-llama/Llama-3.2-1B-Instruct"
+                    or self.config["model_name"] == "Qwen/Qwen2.5-0.5B-Instruct"
+                ):
                     load_policy_checkpoint(self.model, policy_path, strict=False)
                 else:
                     load_policy_checkpoint(self.model, policy_path, strict=False)
@@ -264,8 +269,12 @@ class BatchInferenceService:
             hidden_states[i] = last_hidden_states[i, -gen_length - 1, :]
 
             labels = padded_input_ids[i, -gen_length:]
-            logits_tok = self.model.lm_head(last_hidden_states[i, -gen_length - 1 : -1, :])
-            selected_logits = logits_tok.gather(dim=-1, index=labels.unsqueeze(-1)).squeeze(-1)
+            logits_tok = self.model.lm_head(
+                last_hidden_states[i, -gen_length - 1 : -1, :]
+            )
+            selected_logits = logits_tok.gather(
+                dim=-1, index=labels.unsqueeze(-1)
+            ).squeeze(-1)
             log_norm = torch.logsumexp(logits_tok, dim=-1)
             summed_logprobs[i] = (selected_logits - log_norm).sum()
 
@@ -367,8 +376,8 @@ class InferenceServicer(inference_pb2_grpc.InferenceServicer):
         )
 
         dataset_seed = self.batch_inference_service.config.get("dataset_seed")
-        
-        # different splits per rank but replicable across jobs 
+
+        # different splits per rank but replicable across jobs
         dataset_seed += self.batch_inference_service.rank
 
         self.dataset_name = self.batch_inference_service.config.get("dataset_name")
@@ -425,7 +434,6 @@ class InferenceServicer(inference_pb2_grpc.InferenceServicer):
         # )
         return inference_pb2.GraderResponse(reward=reward)
 
-
     def get_prompt(self, request: GetPromptRequest, context):
         # total_start = time.monotonic()
         # fetch_start = time.monotonic()
@@ -453,7 +461,14 @@ class InferenceServicer(inference_pb2_grpc.InferenceServicer):
         # redis_ms = (time.monotonic() - redis_start) * 1000.0
 
         # prompt_build_start = time.monotonic()
-        message = [system_prompt_message if self.dataset_name != "countdown" else countdown_system_prompt_message, {"role": "user", "content": problem}]
+        message = [
+            (
+                system_prompt_message
+                if self.dataset_name != "countdown"
+                else countdown_system_prompt_message
+            ),
+            {"role": "user", "content": problem},
+        ]
         chat_template = self.batch_inference_service.tokenizer.apply_chat_template(
             message,
             tokenize=False,
@@ -469,7 +484,9 @@ class InferenceServicer(inference_pb2_grpc.InferenceServicer):
         #     f"redis={redis_ms:.2f}ms build={prompt_build_ms:.2f}ms "
         #     f"dataset={self.dataset_name} prompt_id={prompt_uid} tokens={len(tokenized_ids)}"
         # )
-        return inference_pb2.GetPromptResponse(prompt_id=prompt_uid, problem=tokenized_ids)
+        return inference_pb2.GetPromptResponse(
+            prompt_id=prompt_uid, problem=tokenized_ids
+        )
 
 
 def test(rank: int):
