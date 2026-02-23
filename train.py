@@ -13,6 +13,7 @@ from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
 from torch.distributed.fsdp.wrap import transformer_auto_wrap_policy
 # from transformers.models.llama.modeling_llama import LlamaDecoderLayer
 from transformers.models.qwen2.modeling_qwen2 import Qwen2DecoderLayer
+from transformers import get_scheduler
 import functools
 from tqdm import trange
 import torch.distributed as dist
@@ -239,6 +240,13 @@ def train(config: dict, redis: Redis, rank: int):
     max_train_seqlen = config["max_train_seqlen"]
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=config["learning_rate"], fused=True)
+    lr_warmup_steps = int(config.get("lr_warmup_steps", 0))
+    scheduler = get_scheduler(
+        name="linear",
+        optimizer=optimizer,
+        num_warmup_steps=lr_warmup_steps,
+        num_training_steps=max_steps,
+    )
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
@@ -323,6 +331,7 @@ def train(config: dict, redis: Redis, rank: int):
                 config,
                 log_metrics=is_rank0,
             )
+            scheduler.step()
 
             global_step += 1
     finally:

@@ -13,6 +13,7 @@ use inference::{
     InferenceResponse, PriorEntry,
 };
 use rand::seq::IteratorRandom;
+use std::collections::HashSet;
 
 pub struct InferenceClientPool {
     clients: BTreeMap<usize, InferenceClient<Channel>>,
@@ -106,6 +107,7 @@ impl InferenceClientPool {
         max_wait: Duration,
     ) -> Result<()> {
         let start = Instant::now();
+        let mut ready_servers = HashSet::new();
         loop {
             let mut ready = true;
             for i in 0..num_servers {
@@ -113,6 +115,8 @@ impl InferenceClientPool {
                 if TcpStream::connect(&addr).await.is_err() {
                     ready = false;
                     break;
+                } else {
+                    ready_servers.insert(start_rank + i);
                 }
             }
 
@@ -122,13 +126,16 @@ impl InferenceClientPool {
 
             if start.elapsed() >= max_wait {
                 anyhow::bail!(
-                    "Timed out waiting for inference servers to come online after {}ms",
-                    max_wait.as_millis()
+                    "Timed out waiting for inference servers to come online after {}ms. Only {} servers ready",
+                    max_wait.as_millis(),
+                    ready_servers.len()
                 );
             }
 
             warn!(
-                "Some inference servers not online yet. Retrying in {}ms...",
+                "Some inference servers not online yet. Only {} servers ready: {:?}. Retrying in {}ms...",
+                ready_servers.len(),
+                ready_servers,
                 Self::STARTUP_RETRY_INTERVAL_MS
             );
             tokio::time::sleep(Duration::from_millis(Self::STARTUP_RETRY_INTERVAL_MS)).await;
