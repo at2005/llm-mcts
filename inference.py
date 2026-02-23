@@ -25,10 +25,12 @@ import torch.nn.functional as F
 import gc
 from redis import Redis
 import json
+import wandb
 from data import get_dataset, system_prompt_message, countdown_system_prompt_message
 from datasets import load_dataset
 from transformers.modeling_utils import load_sharded_checkpoint
 from safetensors.torch import load_file as load_safetensors_file
+from eval import get_test_dataset, eval_countdown
 
 
 def resolve_weight_paths(config: dict) -> tuple[str, str]:
@@ -111,8 +113,34 @@ class BatchInferenceService:
         self.batch_size = self.config["inference_batch_size"]
 
         self.per_gpu_queue = queue.Queue()
+        self.last_applied_version = 0
+        self.eval_every_weight_updates = int(
+            self.config.get("eval_every_weight_updates", 6)
+        )
+        self.eval_owner_rank = int(self.config.get("inference_start_rank", 0))
+        self.eval_dataset = None
+        self.eval_grader = None
+        self.wandb_eval_enabled = bool(self.config.get("wandb_eval_enabled", True))
+        if (
+            self.rank == self.eval_owner_rank
+            and self.config.get("dataset_name") == "countdown"
+            and self.eval_every_weight_updates > 0
+        ):
+            self.eval_dataset = get_test_dataset(self.config)
+            self.eval_grader = Graders()
+            if self.wandb_eval_enabled:
+                wandb.init(
+                    project=self.config.get("wandb_project", "mcts-language-model"),
+                    name=self.config.get("wandb_eval_run_name", f"inference-eval-rank-{rank}"),
+                    config={
+                        "model_name": self.config.get("model_name"),
+                        "dataset_name": self.config.get("dataset_name"),
+                        "eval_every_weight_updates": self.eval_every_weight_updates,
+                        "eval_owner_rank": self.eval_owner_rank,
+                    },
+                )
 
-    def sync_weights(self):
+    def sync_weights(self, version: int | None = None):
         value_path, policy_path = resolve_weight_paths(self.config)
         if os.path.exists(value_path) and os.path.exists(policy_path):
             with self.weights_lock:
@@ -136,6 +164,8 @@ class BatchInferenceService:
                 else:
                     load_policy_checkpoint(self.model, policy_path, strict=False)
                 torch.cuda.empty_cache()
+            if version is not None:
+                self.last_applied_version = int(version)
             # print(f"Rank {self.rank}: Loaded new weights")
 
     def weight_subscriber(self):
@@ -152,8 +182,29 @@ class BatchInferenceService:
         for message in pubsub.listen():
             if message["type"] == "message":
                 try:
-                    json.loads(message["data"])
-                    self.sync_weights()
+                    payload = json.loads(message["data"])
+                    version = int(payload.get("version", 0))
+                    if version <= self.last_applied_version:
+                        continue
+                    self.sync_weights(version=version)
+                    if (
+                        self.eval_dataset is not None
+                        and version % self.eval_every_weight_updates == 0
+                    ):
+                        with self.weights_lock:
+                            eval_score = eval_countdown(
+                                self.model,
+                                self.eval_dataset,
+                                self.eval_grader,
+                                self.config,
+                            )
+                        if self.wandb_eval_enabled:
+                            wandb.log(
+                                {
+                                    "eval/score": eval_score,
+                                    "weights/version": version,
+                                }
+                            )
                 except Exception as e:
                     print(f"Rank {self.rank}: Error syncing weights: {e}")
 
@@ -344,8 +395,6 @@ class InferenceServicer(inference_pb2_grpc.InferenceServicer):
         # grade_start = time.monotonic()
         if self.dataset_name == "openai/gsm8k":
             reward = self.graders.gsm8k_grader(string_state, prompt_id)
-        elif self.dataset_name == "EleutherAI/hendrycks_math":
-            reward = self.graders.maths_grader(string_state, prompt_id)
         elif self.dataset_name == "countdown":
             reward = self.graders.countdown_grader(string_state, prompt_id)
         else:

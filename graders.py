@@ -3,11 +3,8 @@ import re
 import time
 from math import isfinite
 from numbers import Real
-
 from redis import Redis
-from math_verify import parse, verify, LatexExtractionConfig, ExprExtractionConfig
 from simpleeval import simple_eval
-
 
 class Graders:
     def __init__(self):
@@ -15,7 +12,7 @@ class Graders:
         self.positive_reward = 1.0
         self.negative_reward = -1.0
         self._missing_reward = 0.0
-        self.format_reward = 0.0
+        self.format_reward = 0.1
         self._redis_retry_attempts = 3
         self._redis_retry_delay_s = 0.05
         self._countdown_prompt_meta_cache = {}
@@ -27,12 +24,6 @@ class Graders:
 
         matches = re.findall(r"<answer>(.*?)</answer>", search_text, re.DOTALL)
         return matches[-1].strip() if matches else None
-
-    def _normalize_answer_for_parser(self, answer: str) -> str:
-        normalized = answer.strip()
-        if normalized.count("$") == 1:
-            normalized = normalized.replace("$", "")
-        return normalized
 
     def _read_redis(self, key: str) -> str:
         try:
@@ -89,27 +80,6 @@ class Graders:
         self._countdown_prompt_meta_cache[prompt_id] = meta
         return meta
 
-    def maths_grader(self, string_state: str, prompt_id: int) -> float:
-        key = f"correct_answer:{prompt_id}"
-        gold_answer = self._read_redis_with_retry(key)
-
-        if gold_answer is None:
-            return self._missing_reward
-
-        model_answer = self.parse_answer(string_state)
-        model_answer = self._normalize_answer_for_parser(model_answer)
-        try:
-            extraction = [LatexExtractionConfig()]
-            gold = parse(gold_answer, extraction_config=extraction, parsing_timeout=None)
-            pred = parse(model_answer, extraction_config=extraction, parsing_timeout=None)
-            return (
-                self.positive_reward
-                if verify(gold, pred, timeout_seconds=None)
-                else self.negative_reward
-            )
-        except Exception:
-            return self.negative_reward
-
     def gsm8k_grader(self, string_state: str, prompt_id: int) -> float:
         reward = 0.0
         answer = self.parse_answer(string_state)
@@ -139,15 +109,8 @@ class Graders:
                 return False
         return True
 
-    def countdown_grader(self, model_answer: str, prompt_id: int) -> float:
-        reward = 0.0
-        model_expr = self.parse_answer(model_answer)
-        if model_expr is None:
-            return self.negative_reward
-        reward += self.format_reward
-
+    def get_countdown_prompt_metadata(self, prompt_id: int) -> tuple[int, list[int]]:
         correct_answer_raw, input_numbers_raw = self._read_countdown_prompt_meta(prompt_id)
-
         try:
             if correct_answer_raw is None or input_numbers_raw is None:
                 return self._missing_reward
@@ -157,16 +120,22 @@ class Graders:
             else:
                 input_numbers = input_numbers_raw
         except Exception as exc:
-            return self._missing_reward
+            return None, None
+
+        return correct_answer, input_numbers
+
+    def countdown_reward_func(self, model_answer: str, correct_answer: int, input_numbers: list[int], dense_rewards: bool = False) -> float:
+        reward = 0.0
+        model_expr = self.parse_answer(model_answer)
+        if model_expr is None:
+            return self.negative_reward
+        reward += self.format_reward
 
         if not self.validate_numbers(model_expr, input_numbers):
             return self.negative_reward + reward
 
         try:
-            # start_time = time.time()
             answer = simple_eval(model_expr)
-            # end_time = time.time()
-            # print(f"Time taken to evaluate expression: {end_time - start_time} seconds")
         except Exception as exc:
             return self.negative_reward + reward
 
@@ -176,9 +145,15 @@ class Graders:
             return self.negative_reward + reward
 
         distance = abs(float(answer) - correct_answer)
-        correct_reward = (
-            self.positive_reward
-            if distance == 0.0
-            else self.negative_reward + (1.0 / (1.0 + distance))
-        )
+
+        if not dense_rewards:
+            return float(distance == 0)
+
+        correct_reward = self.positive_reward - self.format_reward - min(distance / correct_answer, 1.0) * 2.0
         return correct_reward + reward
+
+    def countdown_grader(self, model_answer: str, prompt_id: int) -> float:
+        correct_answer, input_numbers = self.get_countdown_prompt_metadata(prompt_id)
+        if correct_answer is None or input_numbers is None:
+            return self._missing_reward
+        return self.countdown_reward_func(model_answer, correct_answer, input_numbers)

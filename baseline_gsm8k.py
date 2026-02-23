@@ -86,7 +86,7 @@ def main():
     model.train()
     
     if int(os.environ.get("RANK", "0")) == 0:
-        wandb.init(project="mcts-language-model", name="grpo-baseline-qwen1.5b-gsm8k", config={
+        wandb.init(project="mcts-language-model", name="grpo-baseline-qwen1.5b-countdown", config={
             "model_name": config["model_name"],
             "dataset_name": config["dataset_name"],
             "group_size": config["topk"],

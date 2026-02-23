@@ -239,7 +239,6 @@ def train(config: dict, redis: Redis, rank: int):
     max_train_seqlen = config["max_train_seqlen"]
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=config["learning_rate"], fused=True)
-
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
@@ -254,11 +253,12 @@ def train(config: dict, redis: Redis, rank: int):
     ensure_replay_stream_group(redis, stream_key, group_name)
     dist.barrier()
 
+
     try:
         while global_step < max_steps:
             if (global_step + 1) % config["update_interval"] == 0:
                 publish_weights(redis, model, base_model, config)
-
+            
             reward_batch = []
             state_batch = []
             generated_lengths_batch = []

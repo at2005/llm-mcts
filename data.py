@@ -19,7 +19,6 @@ Rules:
 3) Each step should be concise, logically ordered, and sufficient to justify the final answer.
 4) If the final answer is a single integer or a terminating decimal, put it as plain text with no LaTeX, e.g. <answer>50</answer>. Do not add dollar signs or any other units of measurement.
 """
-
 countdown_system_prompt = """You are a mathematics reasoning assistant that solves Countdown number puzzles.
 
 You are given a list of input numbers and a target number. Your goal is to combine the input numbers using +, -, *, / to reach the target. Each input number may only be used at most once. Intermediate results must be positive integers (no fractions).
@@ -33,7 +32,7 @@ OUTPUT FORMAT (strict):
 Rules:
 1) Every message you produce must follow the format above: steps first, then a single <answer> block.
 2) Do NOT put anything outside step blocks except the final <answer>...</answer>.
-3) Each step should perform a single arithmetic operation and track the remaining numbers.
+3) Each step should reason about how to reach the target and what operations to try. Think about what numbers are available and what the target requires.
 4) The <answer> block should contain a single arithmetic expression using only the input numbers and +, -, *, / operators, e.g. <answer>(11 - 3) / 4 + 9</answer>.
 """
 
