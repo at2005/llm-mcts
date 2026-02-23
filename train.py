@@ -140,10 +140,7 @@ def ppo_step(
         )  # [B, T]
         denominator = logit_mask.sum(dim=1).clamp(min=1)  # [B]
 
-        selected_logits = logits.gather(dim=-1, index=targets.unsqueeze(-1)).squeeze(-1)
-        log_norm = torch.logsumexp(logits, dim=-1)
-        log_probs_selected = selected_logits - log_norm
-
+        log_probs_selected = -F.cross_entropy(logits, targets, reduction="none")
         # select for generated tokens, guaranteed to have no padding since we use left padding
         log_probs_selected = log_probs_selected.masked_fill(~logit_mask, 0)
 

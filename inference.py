@@ -272,11 +272,10 @@ class BatchInferenceService:
             logits_tok = self.model.lm_head(
                 last_hidden_states[i, -gen_length - 1 : -1, :]
             )
-            selected_logits = logits_tok.gather(
-                dim=-1, index=labels.unsqueeze(-1)
-            ).squeeze(-1)
-            log_norm = torch.logsumexp(logits_tok, dim=-1)
-            summed_logprobs[i] = (selected_logits - log_norm).sum()
+
+            summed_logprobs[i] = -F.cross_entropy(
+                logits_tok, labels, reduction="none"
+            ).sum()
 
         return summed_logprobs, hidden_states
 
