@@ -27,9 +27,10 @@ def process_dataset_example(example):
 grader = Graders()
 
 
-def load_countdown_dataset(seed: int | None = None) -> Dataset:
+def load_countdown_dataset(seed: int | None = None, split: str = "train") -> Dataset:
     rows = []
-    with open("envs/cd/dataset.json", "r") as f:
+    fname = "envs/cd/dataset.json" if split == "train" else "envs/cd/dataset_test.json"
+    with open(fname, "r") as f:
         for line in f:
             rows.append(json.loads(line))
 

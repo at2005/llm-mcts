@@ -121,6 +121,13 @@ class BatchInferenceService:
         self.eval_dataset = None
         self.eval_grader = None
         self.wandb_eval_enabled = bool(self.config.get("wandb_eval_enabled", True))
+        # Keep dense countdown rewards for online training/inference by default.
+        self.countdown_dense_rewards = bool(
+            self.config.get(
+                "countdown_dense_rewards",
+                self.config.get("dense_rewards", True),
+            )
+        )
         if (
             self.rank == self.eval_owner_rank
             and self.config.get("dataset_name") == "countdown"
@@ -197,6 +204,8 @@ class BatchInferenceService:
                                 self.eval_dataset,
                                 self.eval_grader,
                                 self.config,
+                                llm=self.llm,
+                                tokenizer=self.tokenizer,
                             )
                         if self.wandb_eval_enabled:
                             wandb.log(
@@ -396,7 +405,11 @@ class InferenceServicer(inference_pb2_grpc.InferenceServicer):
         if self.dataset_name == "openai/gsm8k":
             reward = self.graders.gsm8k_grader(string_state, prompt_id)
         elif self.dataset_name == "countdown":
-            reward = self.graders.countdown_grader(string_state, prompt_id)
+            reward = self.graders.countdown_grader(
+                string_state,
+                prompt_id,
+                dense_rewards=self.batch_inference_service.countdown_dense_rewards,
+            )
         else:
             context.abort(
                 grpc.StatusCode.INVALID_ARGUMENT,

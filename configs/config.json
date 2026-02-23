@@ -33,7 +33,7 @@
     "stop_phrase": "<|end_step|>",
     "c_value_loss": 1.0,
     "c_policy_loss": 1.0,
-    "c_kl_loss": 0.02,
+    "c_kl_loss": 0.05,
     "training_max_wait_ms": 100000,
     "training_max_steps": 1024,
     "ui_logging_enabled": false,
@@ -45,5 +45,6 @@
     "num_ppo_inner_steps": 1,
     "max_grad_norm": 0.1,
     "update_interval": 2,
-    "max_train_seqlen": 1024
+    "max_train_seqlen": 1024,
+    "wandb_eval_enabled": true
 }

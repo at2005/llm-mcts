@@ -126,23 +126,24 @@ class Graders:
 
     def countdown_reward_func(self, model_answer: str, correct_answer: int, input_numbers: list[int], dense_rewards: bool = False) -> float:
         reward = 0.0
+        sparse_fail_reward = 0.0
         model_expr = self.parse_answer(model_answer)
         if model_expr is None:
-            return self.negative_reward
+            return self.negative_reward if dense_rewards else sparse_fail_reward
         reward += self.format_reward
 
         if not self.validate_numbers(model_expr, input_numbers):
-            return self.negative_reward + reward
+            return self.negative_reward + reward if dense_rewards else sparse_fail_reward
 
         try:
             answer = simple_eval(model_expr)
         except Exception as exc:
-            return self.negative_reward + reward
+            return self.negative_reward + reward if dense_rewards else sparse_fail_reward
 
         if isinstance(answer, bool) or not isinstance(answer, Real):
-            return self.negative_reward + reward
+            return self.negative_reward + reward if dense_rewards else sparse_fail_reward
         if isinstance(answer, float) and not isfinite(answer):
-            return self.negative_reward + reward
+            return self.negative_reward + reward if dense_rewards else sparse_fail_reward
 
         distance = abs(float(answer) - correct_answer)
 
@@ -152,8 +153,13 @@ class Graders:
         correct_reward = self.positive_reward - self.format_reward - min(distance / correct_answer, 1.0) * 2.0
         return correct_reward + reward
 
-    def countdown_grader(self, model_answer: str, prompt_id: int) -> float:
+    def countdown_grader(self, model_answer: str, prompt_id: int, dense_rewards: bool = False) -> float:
         correct_answer, input_numbers = self.get_countdown_prompt_metadata(prompt_id)
         if correct_answer is None or input_numbers is None:
             return self._missing_reward
-        return self.countdown_reward_func(model_answer, correct_answer, input_numbers)
+        return self.countdown_reward_func(
+            model_answer,
+            correct_answer,
+            input_numbers,
+            dense_rewards=dense_rewards,
+        )
