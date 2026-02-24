@@ -10,7 +10,6 @@ from countdown_dataset import load_countdown_dataset, process_dataset_example
 from eval import eval_countdown_hf, get_test_dataset
 from graders import Graders
 
-
 grader = Graders()
 
 
@@ -59,10 +58,7 @@ class PeriodicRewardEvalCallback(TrainerCallback):
             )
             print(f"[baseline eval] step={state.global_step} eval/score={score:.4f}")
             if wandb.run is not None:
-                wandb.log(
-                    {"eval/score": score, "train/global_step": state.global_step},
-                    step=state.global_step,
-                )
+                wandb.log({"eval/score": score, "train/global_step": state.global_step})
             self.last_eval_step = state.global_step
         except Exception as exc:
             print(f"[baseline eval] step={state.global_step} eval failed: {exc}")
@@ -106,6 +102,8 @@ def main():
                 "per_device_train_batch_size": config["training_batch_size"] // 2,
             },
         )
+        wandb.define_metric("train/global_step")
+        wandb.define_metric("eval/*", step_metric="train/global_step")
     else:
         os.environ["WANDB_MODE"] = "disabled"
 
@@ -117,6 +115,7 @@ def main():
         num_generations=config["topk"] * 4,
         # max_prompt_length=config["max_train_seqlen"],
         bf16=True,
+        cast_lm_head_to_fp32=True,
         report_to="wandb",
         remove_unused_columns=False,
         max_completion_length=1024,

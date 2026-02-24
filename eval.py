@@ -71,7 +71,9 @@ def _generate_with_hf(model, tokenizer, prompts, config):
     temperature = float(config.get("eval_temperature", 0.2))
     batch_size = max(1, int(config.get("baseline_eval_batch_size", 8)))
     max_new_tokens = int(
-        config.get("baseline_eval_max_new_tokens", config.get("eval_max_new_tokens", 256))
+        config.get(
+            "baseline_eval_max_new_tokens", config.get("eval_max_new_tokens", 256)
+        )
     )
     do_sample = temperature > 0.0
     top_p = float(config.get("sampling_top_p", 1.0))
@@ -158,7 +160,9 @@ def eval_countdown_hf(model, test_dataset, grader, config, tokenizer=None):
     was_training = model.training
     model.eval()
     try:
-        prompts_eval_group, samples_eval_group = _group_eval_samples(eval_subset, config)
+        prompts_eval_group, samples_eval_group = _group_eval_samples(
+            eval_subset, config
+        )
         decoded_responses = _generate_with_hf(
             model, tokenizer, prompts_eval_group, config
         )

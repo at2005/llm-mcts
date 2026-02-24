@@ -266,11 +266,13 @@ class BatchInferenceService:
 
         for i in range(len(batch_token_ids)):
             gen_length = generated_lengths[i]
-            hidden_states[i] = last_hidden_states[i, -gen_length - 1, :]
+            hidden_states[i] = last_hidden_states[i, -gen_length - 1, :].to(
+                torch.bfloat16
+            )
 
             labels = padded_input_ids[i, -gen_length:]
             logits_tok = self.model.lm_head(
-                last_hidden_states[i, -gen_length - 1 : -1, :]
+                last_hidden_states[i, -gen_length - 1 : -1, :].to(torch.float32)
             )
 
             summed_logprobs[i] = -F.cross_entropy(
