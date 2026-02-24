@@ -1,7 +1,9 @@
 import functools
+
+import torch
 from transformers import AutoTokenizer
 
-from baseline_countdown import load_countdown_dataset, process_dataset_example
+from countdown_dataset import load_countdown_dataset, process_dataset_example
 
 
 def build_sample(sample, tokenizer):
@@ -64,21 +66,49 @@ def _generate_with_sglang(llm, tokenizer, prompts, config):
     return decoded_full_outputs
 
 
-def eval_countdown(_model, test_dataset, grader, config, llm=None, tokenizer=None):
-    if llm is None:
-        raise ValueError("eval_countdown requires an sglang llm instance")
-    if tokenizer is None:
-        tokenizer = AutoTokenizer.from_pretrained(config["tokenizer_name"])
-    tokenizer.padding_side = "left"
-    tokenizer.pad_token = tokenizer.eos_token
+@torch.inference_mode()
+def _generate_with_hf(model, tokenizer, prompts, config):
+    temperature = float(config.get("eval_temperature", 0.2))
+    batch_size = max(1, int(config.get("baseline_eval_batch_size", 8)))
+    max_new_tokens = int(
+        config.get("baseline_eval_max_new_tokens", config.get("eval_max_new_tokens", 256))
+    )
+    do_sample = temperature > 0.0
+    top_p = float(config.get("sampling_top_p", 1.0))
 
+    decoded_responses = []
+    for i in range(0, len(prompts), batch_size):
+        prompt_batch = prompts[i : i + batch_size]
+        tokenized = tokenizer(prompt_batch, return_tensors="pt", padding=True).to(
+            model.device
+        )
+        generation_kwargs = {
+            "max_new_tokens": max_new_tokens,
+            "pad_token_id": tokenizer.pad_token_id,
+            "eos_token_id": tokenizer.eos_token_id,
+            "do_sample": do_sample,
+        }
+        if do_sample:
+            generation_kwargs["temperature"] = temperature
+            generation_kwargs["top_p"] = top_p
+
+        output_ids = model.generate(**tokenized, **generation_kwargs)
+        generated_ids = output_ids[:, tokenized["input_ids"].shape[1] :]
+        decoded_responses.extend(
+            tokenizer.batch_decode(generated_ids, skip_special_tokens=False)
+        )
+    return decoded_responses
+
+
+def _group_eval_samples(test_dataset, config):
     k = int(config.get("eval_mean_at_k", 1))
     prompts = [sample["model_input"] for sample in test_dataset]
     prompts_eval_group = [prompt for prompt in prompts for _ in range(k)]
     samples_eval_group = [sample for sample in test_dataset for _ in range(k)]
-    decoded_responses = _generate_with_sglang(
-        llm, tokenizer, prompts_eval_group, config
-    )
+    return prompts_eval_group, samples_eval_group
+
+
+def _score_countdown_responses(decoded_responses, samples_eval_group, grader):
     if len(decoded_responses) != len(samples_eval_group):
         raise RuntimeError(
             f"eval response count mismatch: got {len(decoded_responses)} responses "
@@ -98,3 +128,43 @@ def eval_countdown(_model, test_dataset, grader, config, llm=None, tokenizer=Non
         )
         rewards.append(reward)
     return sum(rewards) / len(rewards)
+
+
+def eval_countdown(_model, test_dataset, grader, config, llm=None, tokenizer=None):
+    if llm is None:
+        raise ValueError("eval_countdown requires an sglang llm instance")
+    if tokenizer is None:
+        tokenizer = AutoTokenizer.from_pretrained(config["tokenizer_name"])
+    tokenizer.padding_side = "left"
+    tokenizer.pad_token = tokenizer.eos_token
+
+    prompts_eval_group, samples_eval_group = _group_eval_samples(test_dataset, config)
+    decoded_responses = _generate_with_sglang(
+        llm, tokenizer, prompts_eval_group, config
+    )
+    return _score_countdown_responses(decoded_responses, samples_eval_group, grader)
+
+
+def eval_countdown_hf(model, test_dataset, grader, config, tokenizer=None):
+    if tokenizer is None:
+        tokenizer = AutoTokenizer.from_pretrained(config["tokenizer_name"])
+    tokenizer.padding_side = "left"
+    tokenizer.pad_token = tokenizer.eos_token
+
+    max_samples = int(config.get("baseline_eval_num_samples", len(test_dataset)))
+    max_samples = min(max_samples, len(test_dataset))
+    eval_subset = [test_dataset[i] for i in range(max_samples)]
+
+    was_training = model.training
+    model.eval()
+    try:
+        prompts_eval_group, samples_eval_group = _group_eval_samples(eval_subset, config)
+        decoded_responses = _generate_with_hf(
+            model, tokenizer, prompts_eval_group, config
+        )
+        return _score_countdown_responses(decoded_responses, samples_eval_group, grader)
+    finally:
+        if was_training:
+            model.train()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()

@@ -1,44 +1,17 @@
-from trl import GRPOTrainer, GRPOConfig
-from transformers import AutoModelForCausalLM, AutoTokenizer, Mxfp4Config
-import torch
-import os
-from datasets import Dataset
 import json
+import os
+
+import torch
 import wandb
-from data import countdown_system_prompt
+from transformers import AutoModelForCausalLM, AutoTokenizer, TrainerCallback
+from trl import GRPOConfig, GRPOTrainer
+
+from countdown_dataset import load_countdown_dataset, process_dataset_example
+from eval import eval_countdown_hf, get_test_dataset
 from graders import Graders
 
 
-def process_dataset_example(example):
-    input_numbers = [int(n) for n in example["input"]]
-    target = int(example["target"])
-    question = f"Input Sequence: {input_numbers}\nTarget: {target}"
-
-    prompt = [
-        {"role": "system", "content": countdown_system_prompt},
-        {"role": "user", "content": question},
-    ]
-    return {
-        "prompt": prompt,
-        "input_numbers": input_numbers,
-        "target": target,
-    }
-
-
 grader = Graders()
-
-
-def load_countdown_dataset(seed: int | None = None, split: str = "train") -> Dataset:
-    rows = []
-    fname = "envs/cd/dataset.json" if split == "train" else "envs/cd/dataset_test.json"
-    with open(fname, "r") as f:
-        for line in f:
-            rows.append(json.loads(line))
-
-    dataset = Dataset.from_list(rows)
-    if seed is not None:
-        dataset = dataset.shuffle(seed=seed)
-    return dataset
 
 
 def reward_func(completions, target=None, input_numbers=None, **kwargs):
@@ -57,6 +30,45 @@ def reward_func(completions, target=None, input_numbers=None, **kwargs):
     return rewards
 
 
+class PeriodicRewardEvalCallback(TrainerCallback):
+    def __init__(self, config, tokenizer, eval_dataset):
+        self.config = config
+        self.tokenizer = tokenizer
+        self.eval_dataset = eval_dataset
+        self.eval_every_steps = max(1, int(config.get("wandb_eval_every_steps", 24)))
+        self.enabled = bool(config.get("wandb_eval_enabled", True))
+        self.last_eval_step = -1
+
+    def on_step_end(self, args, state, control, model=None, **kwargs):
+        if not self.enabled or model is None or self.eval_dataset is None:
+            return control
+        if not state.is_world_process_zero:
+            return control
+        if state.global_step == 0 or state.global_step % self.eval_every_steps != 0:
+            return control
+        if state.global_step == self.last_eval_step:
+            return control
+
+        try:
+            score = eval_countdown_hf(
+                model,
+                self.eval_dataset,
+                grader,
+                self.config,
+                tokenizer=self.tokenizer,
+            )
+            print(f"[baseline eval] step={state.global_step} eval/score={score:.4f}")
+            if wandb.run is not None:
+                wandb.log(
+                    {"eval/score": score, "train/global_step": state.global_step},
+                    step=state.global_step,
+                )
+            self.last_eval_step = state.global_step
+        except Exception as exc:
+            print(f"[baseline eval] step={state.global_step} eval failed: {exc}")
+        return control
+
+
 def main():
     config = json.load(open("configs/config.json"))
     dataset = load_countdown_dataset(seed=config.get("dataset_seed", 42))
@@ -65,6 +77,10 @@ def main():
     tokenizer = AutoTokenizer.from_pretrained(config["tokenizer_name"])
     tokenizer.padding_side = "left"
     tokenizer.pad_token = tokenizer.eos_token
+
+    eval_dataset = None
+    if bool(config.get("baseline_eval_enabled", True)):
+        eval_dataset = get_test_dataset(config)
 
     model_kwargs = dict(
         # attn_implementation="flash_attention_2",
@@ -118,6 +134,7 @@ def main():
         train_dataset=dataset,
         processing_class=tokenizer,
     )
+    trainer.add_callback(PeriodicRewardEvalCallback(config, tokenizer, eval_dataset))
 
     trainer.train()
     wandb.finish()
