@@ -72,16 +72,21 @@ def eval_countdown(_model, test_dataset, grader, config, llm=None, tokenizer=Non
     tokenizer.padding_side = "left"
     tokenizer.pad_token = tokenizer.eos_token
 
+    k = int(config.get("eval_mean_at_k", 1))
     prompts = [sample["model_input"] for sample in test_dataset]
-    prompts_eval_group = [
-        prompt for prompt in prompts for _ in range(config.get("eval_mean_at_k", 1))
-    ]
+    prompts_eval_group = [prompt for prompt in prompts for _ in range(k)]
+    samples_eval_group = [sample for sample in test_dataset for _ in range(k)]
     decoded_responses = _generate_with_sglang(
         llm, tokenizer, prompts_eval_group, config
     )
+    if len(decoded_responses) != len(samples_eval_group):
+        raise RuntimeError(
+            f"eval response count mismatch: got {len(decoded_responses)} responses "
+            f"for {len(samples_eval_group)} repeated samples"
+        )
 
     rewards = []
-    for response, sample in zip(decoded_responses, test_dataset):
+    for response, sample in zip(decoded_responses, samples_eval_group):
         input_numbers = sample.get("input_numbers")
         if input_numbers is None:
             input_numbers = sample.get("input")
