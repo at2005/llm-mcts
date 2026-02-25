@@ -54,8 +54,7 @@ class TrainingModel(nn.Module):
             )
             hidden_states = base_outputs.last_hidden_state
 
-        # Compute LM head in full precision for more stable log-prob/loss math.
-        logits = self.model.lm_head(hidden_states.to(torch.float32)).to(torch.float32)
+        logits = self.model.lm_head(hidden_states)
 
         with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
             value = self.value_head(self.value_norm(hidden_states)).squeeze(

@@ -145,32 +145,25 @@ def ppo_step(
         ).reshape(logits.shape[0], -1)
         # select for generated tokens, guaranteed to have no padding since we use left padding
         log_probs_selected = log_probs_selected.masked_fill(~logit_mask, 0)
+        log_probs_selected = log_probs_selected.to(torch.float32)
 
         advantage: torch.Tensor = reward.unsqueeze(-1) - values.detach()  # [B, T]
         advantage = advantage.masked_fill(~logit_mask, 0)
 
         kl_logits, _ = kl_model(input_ids, attention_mask)
-        kl_selected_logits = kl_logits.gather(
-            dim=-1, index=targets.unsqueeze(-1)
-        ).squeeze(-1)
-        kl_log_norm = torch.logsumexp(kl_logits, dim=-1)
-        kl_log_probs_selected = kl_selected_logits - kl_log_norm
+        
+        kl_log_probs_selected = -F.cross_entropy(kl_logits.reshape(-1, kl_logits.shape[-1]), targets.reshape(-1), reduction="none").reshape(kl_logits.shape[0], -1)
         kl_log_probs_selected = kl_log_probs_selected.masked_fill(~logit_mask, 0)
+        kl_log_probs_selected = kl_log_probs_selected.to(torch.float32)
+
 
     for _ in trange(
         num_ppo_inner_steps, desc="PPO inner steps", disable=not log_metrics
     ):
         new_logits, new_values = model(input_ids, attention_mask)
-        new_selected_logits = new_logits.gather(
-            dim=-1, index=targets.unsqueeze(-1)
-        ).squeeze(
-            -1
-        )  # [B, T]
-        new_log_norm = torch.logsumexp(new_logits, dim=-1)
-        new_log_probs_selected = new_selected_logits - new_log_norm
-
-        # select for generated tokens, guaranteed to have no padding since we use left padding
+        new_log_probs_selected = -F.cross_entropy(new_logits.reshape(-1, new_logits.shape[-1]), targets.reshape(-1), reduction="none").reshape(new_logits.shape[0], -1)
         new_log_probs_selected = new_log_probs_selected.masked_fill(~logit_mask, 0)
+        new_log_probs_selected = new_log_probs_selected.to(torch.float32)
 
         log_ratio = new_log_probs_selected - log_probs_selected
         log_ratio = torch.clamp(log_ratio, min=-10, max=10)

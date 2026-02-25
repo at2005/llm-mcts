@@ -272,8 +272,8 @@ class BatchInferenceService:
 
             labels = padded_input_ids[i, -gen_length:]
             logits_tok = self.model.lm_head(
-                last_hidden_states[i, -gen_length - 1 : -1, :].to(torch.float32)
-            )
+                last_hidden_states[i, -gen_length - 1 : -1, :]
+            ).to(torch.float32)
 
             summed_logprobs[i] = -F.cross_entropy(
                 logits_tok, labels, reduction="none"
