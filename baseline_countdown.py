@@ -124,6 +124,8 @@ def main():
             "truncation": True,
             "max_length": 1024,
         },
+        loss_type="cispo",
+        epsilon_high=5.0,
     )
 
     trainer = GRPOTrainer(
