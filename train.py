@@ -168,11 +168,16 @@ def ppo_step(
         log_ratio = new_log_probs_selected - log_probs_selected
         log_ratio = torch.clamp(log_ratio, min=-10, max=10)
         ratio = torch.exp(log_ratio)
-        ratio_clipped = ratio.clip(1 - epsilon, 1 + epsilon)  # [B, T]
 
-        policy_loss: torch.Tensor = -torch.min(
-            ratio * advantage, ratio_clipped * advantage
-        )
+        if config["loss_type"] == "cispo":
+            clipped_ratio = torch.min(ratio, config["epsilon_high"]).detach()
+            policy_loss : torch.Tensor = -clipped_ratio * advantage * new_logprobs_selected
+
+        elif config["loss_type"] == "ppo":
+            ratio_clipped = ratio.clip(1 - epsilon, 1 + epsilon)  # [B, T]
+            policy_loss: torch.Tensor = -torch.min(
+                ratio * advantage, ratio_clipped * advantage
+            )
 
         policy_loss = policy_loss.sum(dim=1) / denominator
 

@@ -49,5 +49,7 @@
     "eval_mean_at_k": 16,
     "eval_generation_batch_size": 8,
     "eval_max_new_tokens": 1024,
-    "eval_temperature": 0.2
+    "eval_temperature": 0.2,
+    "loss_type": "cispo",
+    "epsilon_high": 5.0
 }
