@@ -22,7 +22,3 @@ wandb/
 
 .DS_Store
 trainer_output/
-
-
-envs/cd/dataset.json
-envs/cd/dataset_test.json

@@ -10,6 +10,9 @@ from countdown_dataset import load_countdown_dataset, process_dataset_example
 from eval import eval_countdown_hf, get_test_dataset
 from graders import Graders
 
+torch.backends.cuda.matmul.allow_tf32 = True
+torch.set_float32_matmul_precision("high")
+
 grader = Graders()
 
 
@@ -23,7 +26,8 @@ def reward_func(completions, target=None, input_numbers=None, **kwargs):
     for comp, gold_target, numbers in zip(completions, target, input_numbers):
         text = comp[0]["content"] if isinstance(comp, list) else comp
         reward = grader.countdown_reward_func(
-            text, int(gold_target), [int(n) for n in numbers]
+            text, int(gold_target), [int(n) for n in numbers],
+            dense_rewards=True,
         )
         rewards.append(reward)
     return rewards
@@ -34,7 +38,7 @@ class PeriodicRewardEvalCallback(TrainerCallback):
         self.config = config
         self.tokenizer = tokenizer
         self.eval_dataset = eval_dataset
-        self.eval_every_steps = max(1, int(config.get("wandb_eval_every_steps", 24)))
+        self.eval_every_steps = max(1, int(config.get("wandb_eval_every_steps", 50)))
         self.enabled = bool(config.get("wandb_eval_enabled", True))
         self.last_eval_step = -1
 
@@ -79,9 +83,9 @@ def main():
         eval_dataset = get_test_dataset(config)
 
     model_kwargs = dict(
-        # attn_implementation="flash_attention_2",
+        attn_implementation="flash_attention_2",
         torch_dtype=torch.bfloat16,
-        use_cache=False,
+        use_cache=True,
     )
 
     model = AutoModelForCausalLM.from_pretrained(
@@ -109,8 +113,8 @@ def main():
 
     training_args = GRPOConfig(
         learning_rate=5e-6,
-        max_steps=500,
-        logging_steps=1,
+        max_steps=700,
+        logging_steps=10,
         per_device_train_batch_size=config["training_batch_size"] // 2,
         num_generations=config["topk"] * 4,
         # max_prompt_length=config["max_train_seqlen"],
@@ -126,6 +130,9 @@ def main():
         },
         loss_type="cispo",
         epsilon_high=5.0,
+        # use_vllm=True,
+        # vllm_mode="colocate",
+        # vllm_gpu_memory_utilization=0.35, 
     )
 
     trainer = GRPOTrainer(
