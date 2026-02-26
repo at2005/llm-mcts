@@ -170,7 +170,7 @@ def ppo_step(
         ratio = torch.exp(log_ratio)
 
         if config["loss_type"] == "cispo":
-            ratio_clipped = torch.min(ratio, torch.tensor(config["epsilon_high"])).detach()
+            ratio_clipped = ratio.clamp(max=config["epsilon_high"]).detach()
             policy_loss : torch.Tensor = -ratio_clipped * advantage * new_log_probs_selected
 
         elif config["loss_type"] == "ppo":

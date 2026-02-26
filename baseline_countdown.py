@@ -38,7 +38,7 @@ class PeriodicRewardEvalCallback(TrainerCallback):
         self.config = config
         self.tokenizer = tokenizer
         self.eval_dataset = eval_dataset
-        self.eval_every_steps = max(1, int(config.get("wandb_eval_every_steps", 50)))
+        self.eval_every_steps = max(1, int(config.get("wandb_eval_every_steps", 12)))
         self.enabled = bool(config.get("wandb_eval_enabled", True))
         self.last_eval_step = -1
 
@@ -113,9 +113,9 @@ def main():
 
     training_args = GRPOConfig(
         learning_rate=5e-6,
-        max_steps=700,
+        max_steps=350,
         logging_steps=10,
-        per_device_train_batch_size=config["training_batch_size"] // 2,
+        per_device_train_batch_size=config["training_batch_size"],
         num_generations=config["topk"] * 4,
         # max_prompt_length=config["max_train_seqlen"],
         bf16=True,

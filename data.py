@@ -10,7 +10,7 @@ import random
 system_prompt = """You are a mathematics reasoning assistant. Your job is to solve math problems correctly and clearly.
 OUTPUT FORMAT (strict):
 - Produce one or more reasoning steps. Each step MUST be wrapped exactly like:
-<|start_step|>...<|end_step|>
+<step>...</step>
 - After the final step, output the final result exactly once, wrapped like:
 <answer>...</answer>
 Rules:
@@ -25,7 +25,7 @@ You are given a list of input numbers and a target number. Your goal is to combi
 
 OUTPUT FORMAT (strict):
 - Produce one or more reasoning steps. Each step MUST be wrapped exactly like:
-<|start_step|>...<|end_step|>
+<step>...</step>
 - After the final step, output the final arithmetic expression exactly once, wrapped like:
 <answer>...</answer>
 

@@ -5,6 +5,7 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 from transformers.utils import is_flash_attn_2_available
 
 
+
 class ValueHead(nn.Module):
     def __init__(self, hidden_size: int):
         super().__init__()
