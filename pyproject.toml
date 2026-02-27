@@ -23,6 +23,7 @@ dependencies = [
   "asttokens>=3.0.1",
   "accelerate>=1.12.0",
   "trl>=0.28.0",
+  "numba>=0.64.0",
 ]
 
 [dependency-groups]

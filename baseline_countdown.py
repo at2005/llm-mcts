@@ -7,7 +7,7 @@ from transformers import AutoModelForCausalLM, AutoTokenizer, TrainerCallback
 from trl import GRPOConfig, GRPOTrainer
 
 from countdown_dataset import load_countdown_dataset, process_dataset_example
-from eval import eval_countdown_hf, get_test_dataset
+from eval import eval_countdown_hf, eval_countdown_vllm, get_test_dataset
 from graders import Graders
 
 torch.backends.cuda.matmul.allow_tf32 = True
@@ -34,38 +34,64 @@ def reward_func(completions, target=None, input_numbers=None, **kwargs):
 
 
 class PeriodicRewardEvalCallback(TrainerCallback):
-    def __init__(self, config, tokenizer, eval_dataset):
+    def __init__(self, config, tokenizer, eval_dataset, trainer=None):
         self.config = config
         self.tokenizer = tokenizer
         self.eval_dataset = eval_dataset
+        self.trainer = trainer
         self.eval_every_steps = max(1, int(config.get("wandb_eval_every_steps", 50)))
         self.enabled = bool(config.get("wandb_eval_enabled", True))
         self.last_eval_step = -1
 
+    def _use_vllm_eval(self):
+        return self.trainer is not None and hasattr(self.trainer, "vllm_generation")
+
     def on_step_end(self, args, state, control, model=None, **kwargs):
         if not self.enabled or model is None or self.eval_dataset is None:
-            return control
-        if not state.is_world_process_zero:
             return control
         if state.global_step == 0 or state.global_step % self.eval_every_steps != 0:
             return control
         if state.global_step == self.last_eval_step:
             return control
 
+        use_vllm_eval = self._use_vllm_eval()
+        vllm_tp_size = (
+            int(getattr(self.trainer, "vllm_tensor_parallel_size", 1))
+            if use_vllm_eval
+            else 1
+        )
+        require_all_ranks = use_vllm_eval and vllm_tp_size > 1
+        if not state.is_world_process_zero and not require_all_ranks:
+            return control
+
         try:
-            score = eval_countdown_hf(
-                model,
-                self.eval_dataset,
-                grader,
-                self.config,
-                tokenizer=self.tokenizer,
-            )
-            print(f"[baseline eval] step={state.global_step} eval/score={score:.4f}")
-            if wandb.run is not None:
-                wandb.log({"eval/score": score, "train/global_step": state.global_step})
+            if use_vllm_eval:
+                score = eval_countdown_vllm(
+                    model,
+                    self.eval_dataset,
+                    grader,
+                    self.config,
+                    vllm_generation=self.trainer.vllm_generation,
+                    tokenizer=self.tokenizer,
+                )
+            else:
+                score = eval_countdown_hf(
+                    model,
+                    self.eval_dataset,
+                    grader,
+                    self.config,
+                    tokenizer=self.tokenizer,
+                )
+            if state.is_world_process_zero:
+                print(f"[baseline eval] step={state.global_step} eval/score={score:.4f}")
+                if wandb.run is not None:
+                    wandb.log(
+                        {"eval/score": score, "train/global_step": state.global_step}
+                    )
             self.last_eval_step = state.global_step
         except Exception as exc:
-            print(f"[baseline eval] step={state.global_step} eval failed: {exc}")
+            if state.is_world_process_zero:
+                print(f"[baseline eval] step={state.global_step} eval failed: {exc}")
         return control
 
 
@@ -112,27 +138,30 @@ def main():
         os.environ["WANDB_MODE"] = "disabled"
 
     training_args = GRPOConfig(
-        learning_rate=5e-7,
-        max_steps=700,
+        learning_rate=5e-6,
+        max_steps=1400,
         logging_steps=10,
-        per_device_train_batch_size=6,
+        per_device_train_batch_size=16,
         optim="adamw_torch_fused",
         adam_epsilon=1e-15,
         num_generations=16,
         lr_scheduler_type="constant_with_warmup",
-        warmup_steps=100,
+        warmup_steps=50,
         bf16=True,
         cast_lm_head_to_fp32=True,
         report_to="wandb",
         remove_unused_columns=False,
-        max_completion_length=256,
+        max_completion_length=512,
         max_grad_norm=0.1,
         chat_template_kwargs={
             "truncation": True,
-            "max_length": 1024,
+            "max_length": 512,
         },
         loss_type="cispo",
         epsilon_high=5.0,
+        use_vllm=True,
+        vllm_mode="colocate",
+        vllm_gpu_memory_utilization=0.2,
     )
 
     trainer = GRPOTrainer(
@@ -142,7 +171,9 @@ def main():
         train_dataset=dataset,
         processing_class=tokenizer,
     )
-    trainer.add_callback(PeriodicRewardEvalCallback(config, tokenizer, eval_dataset))
+    trainer.add_callback(
+        PeriodicRewardEvalCallback(config, tokenizer, eval_dataset, trainer=trainer)
+    )
 
     trainer.train()
     wandb.finish()

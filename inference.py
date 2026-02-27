@@ -116,6 +116,7 @@ class BatchInferenceService:
 
         self.per_gpu_queue = queue.Queue()
         self.last_applied_version = 0
+        self.pending_eval_updates = 0
         self.eval_every_weight_updates = int(
             self.config.get("eval_every_weight_updates", 6)
         )
@@ -188,6 +189,19 @@ class BatchInferenceService:
             port=self.config["redis_port"],
             db=self.config["redis_db"],
         )
+        latest_raw = redis.get("weights:latest_version")
+        if latest_raw is not None:
+            try:
+                latest_version = int(latest_raw)
+                if latest_version > 0:
+                    self.sync_weights(version=latest_version)
+                    self.pending_eval_updates = 0
+                    print(
+                        f"Rank {self.rank}: Primed weights to latest known version {latest_version}"
+                    )
+            except Exception as e:
+                print(f"Rank {self.rank}: Failed to prime latest weights: {e}")
+
         pubsub = redis.pubsub()
         pubsub.subscribe("weights:updates")
 
@@ -198,29 +212,55 @@ class BatchInferenceService:
                 try:
                     payload = json.loads(message["data"])
                     version = int(payload.get("version", 0))
+
+                    # Coalesce queued pubsub updates so we can jump straight to newest.
+                    while True:
+                        pending = pubsub.get_message(
+                            ignore_subscribe_messages=True, timeout=0.0
+                        )
+                        if pending is None:
+                            break
+                        if pending.get("type") != "message":
+                            continue
+                        pending_payload = json.loads(pending["data"])
+                        version = max(version, int(pending_payload.get("version", 0)))
+
+                    # Guard against stale message ordering by checking the source of truth.
+                    latest_raw = redis.get("weights:latest_version")
+                    if latest_raw is not None:
+                        version = max(version, int(latest_raw))
+
                     if version <= self.last_applied_version:
                         continue
+                    previous_version = self.last_applied_version
                     self.sync_weights(version=version)
+                    applied_updates = self.last_applied_version - previous_version
                     if (
                         self.eval_dataset is not None
-                        and version % self.eval_every_weight_updates == 0
+                        and applied_updates > 0
                     ):
-                        with self.weights_lock:
-                            eval_score = eval_countdown(
-                                self.model,
-                                self.eval_dataset,
-                                self.eval_grader,
-                                self.config,
-                                llm=self.llm,
-                                tokenizer=self.tokenizer,
+                        self.pending_eval_updates += applied_updates
+                        if self.pending_eval_updates >= self.eval_every_weight_updates:
+                            with self.weights_lock:
+                                eval_score = eval_countdown(
+                                    self.model,
+                                    self.eval_dataset,
+                                    self.eval_grader,
+                                    self.config,
+                                    llm=self.llm,
+                                    tokenizer=self.tokenizer,
+                                )
+                            if self.wandb_eval_enabled:
+                                wandb.log(
+                                    {
+                                        "eval/score": eval_score,
+                                        "weights/version": version,
+                                    }
+                                )
+                            print(
+                                f"Rank {self.rank}: eval/score={eval_score:.4f} weights/version={version}"
                             )
-                        if self.wandb_eval_enabled:
-                            wandb.log(
-                                {
-                                    "eval/score": eval_score,
-                                    "weights/version": version,
-                                }
-                            )
+                            self.pending_eval_updates %= self.eval_every_weight_updates
                 except Exception as e:
                     print(f"Rank {self.rank}: Error syncing weights: {e}")
 

@@ -231,7 +231,9 @@ def train(config: dict, redis: Redis, rank: int):
         transformer_layer_cls={Qwen2DecoderLayer},
     )
 
-    kl_model = build_kl_reference_model(config, base_model, device)
+    kl_base_model = build_kl_reference_model(config, base_model, device)
+    kl_model = FSDP(kl_base_model, auto_wrap_policy=wrap_policy, use_orig_params=True)
+    kl_model.eval()
 
     model = FSDP(base_model, auto_wrap_policy=wrap_policy, use_orig_params=True)
     model.train()
@@ -271,9 +273,6 @@ def train(config: dict, redis: Redis, rank: int):
 
     try:
         while global_step < max_steps:
-            if (global_step + 1) % config["update_interval"] == 0:
-                publish_weights(redis, model, base_model, config)
-
             reward_batch = []
             state_batch = []
             generated_lengths_batch = []
@@ -344,6 +343,8 @@ def train(config: dict, redis: Redis, rank: int):
             scheduler.step()
 
             global_step += 1
+            if global_step % config["update_interval"] == 0:
+                publish_weights(redis, model, base_model, config)
     finally:
         if is_rank0:
             wandb.finish()
