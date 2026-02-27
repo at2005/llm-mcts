@@ -19,6 +19,8 @@ import functools
 from tqdm import trange
 import torch.distributed as dist
 
+torch.backends.cuda.matmul.allow_tf32 = True
+torch.set_float32_matmul_precision("high")
 
 def resolve_weight_paths(config: dict) -> tuple[str, str]:
     local_dir = config.get("weights_local_dir", "/tmp/llm-mcts-weights")

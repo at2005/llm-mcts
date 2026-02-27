@@ -38,7 +38,7 @@ class PeriodicRewardEvalCallback(TrainerCallback):
         self.config = config
         self.tokenizer = tokenizer
         self.eval_dataset = eval_dataset
-        self.eval_every_steps = max(1, int(config.get("wandb_eval_every_steps", 12)))
+        self.eval_every_steps = max(1, int(config.get("wandb_eval_every_steps", 50)))
         self.enabled = bool(config.get("wandb_eval_enabled", True))
         self.last_eval_step = -1
 
@@ -102,8 +102,8 @@ def main():
             config={
                 "model_name": config["model_name"],
                 "dataset_name": config["dataset_name"],
-                "group_size": config["topk"],
-                "per_device_train_batch_size": config["training_batch_size"] // 2,
+                "group_size": 16,
+                "per_device_train_batch_size": 6,
             },
         )
         wandb.define_metric("train/global_step")
@@ -112,17 +112,20 @@ def main():
         os.environ["WANDB_MODE"] = "disabled"
 
     training_args = GRPOConfig(
-        learning_rate=5e-6,
-        max_steps=350,
+        learning_rate=5e-7,
+        max_steps=700,
         logging_steps=10,
-        per_device_train_batch_size=config["training_batch_size"],
-        num_generations=config["topk"] * 4,
-        # max_prompt_length=config["max_train_seqlen"],
+        per_device_train_batch_size=6,
+        optim="adamw_torch_fused",
+        adam_epsilon=1e-15,
+        num_generations=16,
+        lr_scheduler_type="constant_with_warmup",
+        warmup_steps=100,
         bf16=True,
         cast_lm_head_to_fp32=True,
         report_to="wandb",
         remove_unused_columns=False,
-        max_completion_length=1024,
+        max_completion_length=256,
         max_grad_norm=0.1,
         chat_template_kwargs={
             "truncation": True,
@@ -130,9 +133,6 @@ def main():
         },
         loss_type="cispo",
         epsilon_high=5.0,
-        # use_vllm=True,
-        # vllm_mode="colocate",
-        # vllm_gpu_memory_utilization=0.35, 
     )
 
     trainer = GRPOTrainer(

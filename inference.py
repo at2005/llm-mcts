@@ -32,6 +32,8 @@ from transformers.modeling_utils import load_sharded_checkpoint
 from safetensors.torch import load_file as load_safetensors_file
 from eval import get_test_dataset, eval_countdown
 
+torch.backends.cuda.matmul.allow_tf32 = True
+torch.set_float32_matmul_precision("high")
 
 def resolve_weight_paths(config: dict) -> tuple[str, str]:
     local_dir = config.get("weights_local_dir", "/tmp/llm-mcts-weights")
