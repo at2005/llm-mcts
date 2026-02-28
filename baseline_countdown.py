@@ -139,7 +139,7 @@ def main():
 
     training_args = GRPOConfig(
         learning_rate=5e-6,
-        max_steps=1400,
+        max_steps=2100,
         logging_steps=10,
         per_device_train_batch_size=16,
         optim="adamw_torch_fused",

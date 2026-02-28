@@ -32,8 +32,11 @@ def get_test_dataset(config):
     return dataset
 
 
-def _generate_with_sglang(llm, tokenizer, prompts, config):
-    temperature = float(config.get("eval_temperature", 0.2))
+def _generate_with_sglang(llm, tokenizer, prompts, config, temperature=None):
+    if temperature is None:
+        temperature = float(config.get("eval_temperature", 0.2))
+    else:
+        temperature = float(temperature)
     sampling_params = {
         "max_new_tokens": int(config.get("eval_max_new_tokens", 1024)),
         "temperature": temperature,
@@ -139,11 +142,10 @@ def _generate_with_vllm(vllm_generation, tokenizer, prompts, config):
     return decoded_responses
 
 
-def _group_eval_samples(test_dataset, config):
-    k = int(config.get("eval_mean_at_k", 1))
+def _group_eval_samples(test_dataset, config, group_size):
     prompts = [sample["model_input"] for sample in test_dataset]
-    prompts_eval_group = [prompt for prompt in prompts for _ in range(k)]
-    samples_eval_group = [sample for sample in test_dataset for _ in range(k)]
+    prompts_eval_group = [prompt for prompt in prompts for _ in range(group_size)]
+    samples_eval_group = [sample for sample in test_dataset for _ in range(group_size)]
     return prompts_eval_group, samples_eval_group
 
 
@@ -177,7 +179,8 @@ def eval_countdown(_model, test_dataset, grader, config, llm=None, tokenizer=Non
     tokenizer.padding_side = "left"
     tokenizer.pad_token = tokenizer.eos_token
 
-    prompts_eval_group, samples_eval_group = _group_eval_samples(test_dataset, config)
+    k = int(config.get("eval_mean_at_k", 1))
+    prompts_eval_group, samples_eval_group = _group_eval_samples(test_dataset, config, k)
     decoded_responses = _generate_with_sglang(
         llm, tokenizer, prompts_eval_group, config
     )
@@ -197,8 +200,9 @@ def eval_countdown_hf(model, test_dataset, grader, config, tokenizer=None):
     was_training = model.training
     model.eval()
     try:
+        k = int(config.get("eval_mean_at_k", 1))
         prompts_eval_group, samples_eval_group = _group_eval_samples(
-            eval_subset, config
+            eval_subset, config, k
         )
         decoded_responses = _generate_with_hf(
             model, tokenizer, prompts_eval_group, config
@@ -228,9 +232,10 @@ def eval_countdown_vllm(
     was_training = model.training
     model.eval()
     try:
+        k = int(config.get("eval_mean_at_k", 1))
         vllm_generation.sync_weights()
         prompts_eval_group, samples_eval_group = _group_eval_samples(
-            eval_subset, config
+            eval_subset, config, k
         )
         decoded_responses = _generate_with_vllm(
             vllm_generation, tokenizer, prompts_eval_group, config

@@ -26,6 +26,7 @@ import gc
 from redis import Redis
 import json
 import wandb
+from weight_subscriber import run_weight_update_subscriber
 from data import get_dataset, system_prompt_message, countdown_system_prompt_message
 from datasets import load_dataset
 from transformers.modeling_utils import load_sharded_checkpoint
@@ -184,85 +185,56 @@ class BatchInferenceService:
             # print(f"Rank {self.rank}: Loaded new weights")
 
     def weight_subscriber(self):
-        redis = Redis(
-            host=self.config["redis_host"],
-            port=self.config["redis_port"],
-            db=self.config["redis_db"],
-        )
-        latest_raw = redis.get("weights:latest_version")
-        if latest_raw is not None:
-            try:
-                latest_version = int(latest_raw)
-                if latest_version > 0:
-                    self.sync_weights(version=latest_version)
-                    self.pending_eval_updates = 0
-                    print(
-                        f"Rank {self.rank}: Primed weights to latest known version {latest_version}"
-                    )
-            except Exception as e:
-                print(f"Rank {self.rank}: Failed to prime latest weights: {e}")
+        def get_version():
+            return self.last_applied_version
 
-        pubsub = redis.pubsub()
-        pubsub.subscribe("weights:updates")
+        def set_version(version: int):
+            self.last_applied_version = int(version)
+
+        def on_version_applied(previous_version: int, version: int):
+            if previous_version == 0 and version > 0:
+                print(
+                    f"Rank {self.rank}: Primed weights to latest known version {version}"
+                )
+            applied_updates = self.last_applied_version - previous_version
+            if self.eval_dataset is not None and applied_updates > 0:
+                self.pending_eval_updates += applied_updates
+                if self.pending_eval_updates >= self.eval_every_weight_updates:
+                    with self.weights_lock:
+                        eval_score = eval_countdown(
+                            self.model,
+                            self.eval_dataset,
+                            self.eval_grader,
+                            self.config,
+                            llm=self.llm,
+                            tokenizer=self.tokenizer,
+                        )
+                    if self.wandb_eval_enabled:
+                        wandb.log(
+                            {
+                                "eval/score": eval_score,
+                                "weights/version": version,
+                            }
+                        )
+                    print(
+                        f"Rank {self.rank}: eval/score={eval_score:.4f} weights/version={version}"
+                    )
+                    self.pending_eval_updates %= self.eval_every_weight_updates
+
+        def on_error(error: Exception):
+            print(f"Rank {self.rank}: Error syncing weights: {error}")
 
         print(f"Rank {self.rank}: Subscribed to weights:updates")
-
-        for message in pubsub.listen():
-            if message["type"] == "message":
-                try:
-                    payload = json.loads(message["data"])
-                    version = int(payload.get("version", 0))
-
-                    # Coalesce queued pubsub updates so we can jump straight to newest.
-                    while True:
-                        pending = pubsub.get_message(
-                            ignore_subscribe_messages=True, timeout=0.0
-                        )
-                        if pending is None:
-                            break
-                        if pending.get("type") != "message":
-                            continue
-                        pending_payload = json.loads(pending["data"])
-                        version = max(version, int(pending_payload.get("version", 0)))
-
-                    # Guard against stale message ordering by checking the source of truth.
-                    latest_raw = redis.get("weights:latest_version")
-                    if latest_raw is not None:
-                        version = max(version, int(latest_raw))
-
-                    if version <= self.last_applied_version:
-                        continue
-                    previous_version = self.last_applied_version
-                    self.sync_weights(version=version)
-                    applied_updates = self.last_applied_version - previous_version
-                    if (
-                        self.eval_dataset is not None
-                        and applied_updates > 0
-                    ):
-                        self.pending_eval_updates += applied_updates
-                        if self.pending_eval_updates >= self.eval_every_weight_updates:
-                            with self.weights_lock:
-                                eval_score = eval_countdown(
-                                    self.model,
-                                    self.eval_dataset,
-                                    self.eval_grader,
-                                    self.config,
-                                    llm=self.llm,
-                                    tokenizer=self.tokenizer,
-                                )
-                            if self.wandb_eval_enabled:
-                                wandb.log(
-                                    {
-                                        "eval/score": eval_score,
-                                        "weights/version": version,
-                                    }
-                                )
-                            print(
-                                f"Rank {self.rank}: eval/score={eval_score:.4f} weights/version={version}"
-                            )
-                            self.pending_eval_updates %= self.eval_every_weight_updates
-                except Exception as e:
-                    print(f"Rank {self.rank}: Error syncing weights: {e}")
+        run_weight_update_subscriber(
+            self.config["redis_host"],
+            self.config["redis_port"],
+            self.config["redis_db"],
+            self.sync_weights,
+            get_version,
+            set_version,
+            on_version_applied=on_version_applied,
+            on_error=on_error,
+        )
 
     @torch.inference_mode()
     def compute_logprobs(self, input_ids, generated_ids):
@@ -467,26 +439,14 @@ class InferenceServicer(inference_pb2_grpc.InferenceServicer):
                 grpc.StatusCode.INVALID_ARGUMENT,
                 f"Unsupported dataset_name for grading: {self.dataset_name}",
             )
-        # grade_ms = (time.monotonic() - grade_start) * 1000.0
-        # total_ms = (time.monotonic() - total_start) * 1000.0
-
-        # print(
-        #     f"Rank {self.batch_inference_service.rank}: "
-        #     f"grader_latency total={total_ms:.2f}ms decode={decode_ms:.2f}ms "
-        #     f"grade={grade_ms:.2f}ms dataset={self.dataset_name} prompt_id={prompt_id}"
-        # )
         return inference_pb2.GraderResponse(reward=reward)
 
     def get_prompt(self, request: GetPromptRequest, context):
-        # total_start = time.monotonic()
-        # fetch_start = time.monotonic()
         if self.dataset_name == "countdown":
             _, problem, answer, input_numbers = next(self.dataset)
         else:
             _, problem, answer = next(self.dataset)
-        # fetch_ms = (time.monotonic() - fetch_start) * 1000.0
 
-        # redis_start = time.monotonic()
         prompt_uid = int(self.redis.incr("prompt_uid_counter"))
         answer_to_store = "" if answer is None else str(answer)
         if self.dataset_name == "countdown":
@@ -501,9 +461,7 @@ class InferenceServicer(inference_pb2_grpc.InferenceServicer):
             )
         else:
             self.redis.set(f"correct_answer:{prompt_uid}", answer_to_store)
-        # redis_ms = (time.monotonic() - redis_start) * 1000.0
 
-        # prompt_build_start = time.monotonic()
         message = [
             (
                 system_prompt_message
@@ -518,15 +476,6 @@ class InferenceServicer(inference_pb2_grpc.InferenceServicer):
             add_generation_prompt=True,
         )
         tokenized_ids = self.batch_inference_service.tokenizer.encode(chat_template)
-        # prompt_build_ms = (time.monotonic() - prompt_build_start) * 1000.0
-        # total_ms = (time.monotonic() - total_start) * 1000.0
-
-        # print(
-        #     f"Rank {self.batch_inference_service.rank}: "
-        #     f"get_prompt_latency total={total_ms:.2f}ms fetch={fetch_ms:.2f}ms "
-        #     f"redis={redis_ms:.2f}ms build={prompt_build_ms:.2f}ms "
-        #     f"dataset={self.dataset_name} prompt_id={prompt_uid} tokens={len(tokenized_ids)}"
-        # )
         return inference_pb2.GetPromptResponse(
             prompt_id=prompt_uid, problem=tokenized_ids
         )
