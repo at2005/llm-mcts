@@ -25,6 +25,7 @@
     "max_mcts_iterations": 100,
     "max_samples_processed_per_worker": 8192,
     "dataset_seed": 42,
+    "best_of_n_outer_epochs": 3,
     "c_puct": 0.5,
     "virtual_loss": 1,
     "eos_token_id": 151645,

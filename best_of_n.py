@@ -1,3 +1,4 @@
+import argparse
 import json
 import os
 import threading
@@ -14,6 +15,37 @@ from weight_subscriber import run_weight_update_subscriber
 
 grader = Graders()
 N = 64
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(
+        description="Run best-of-n data generation with optional startup weight load."
+    )
+    parser.add_argument(
+        "--config",
+        type=str,
+        default="configs/config.json",
+        help="Path to config JSON.",
+    )
+    parser.add_argument(
+        "--path",
+        type=str,
+        default=None,
+        help=(
+            "Optional checkpoint path for a one-time update_weights_from_disk call "
+            "at startup, similar to init_eval.py."
+        ),
+    )
+    parser.add_argument(
+        "--outer-epochs",
+        type=int,
+        default=None,
+        help=(
+            "Optional override for outer epochs. If omitted, use "
+            "best_of_n_outer_epochs from config."
+        ),
+    )
+    return parser.parse_args()
 
 
 def _resolve_policy_path(config):
@@ -76,8 +108,17 @@ def best_of_n(model, tokenizer, sample, config, N=N):
     return num_prompt_tokens, tokenized_best_of_n_output, best_of_n_score
 
 
-def best_of_n_loop():
-    config = json.load(open("configs/config.json"))
+def best_of_n_loop(outer_epochs=None, startup_policy_path=None, config_path="configs/config.json"):
+    with open(config_path, "r") as f:
+        config = json.load(f)
+    if outer_epochs is None:
+        outer_epochs = int(
+            config.get("best_of_n_outer_epochs", config.get("outer_epochs", 1))
+        )
+    else:
+        outer_epochs = int(outer_epochs)
+    if outer_epochs < 1:
+        raise ValueError(f"outer_epochs must be >= 1, got {outer_epochs}")
     rank = int(os.environ.get("RANK", 0))
     world_size = int(os.environ.get("WORLD_SIZE", 1))
     if world_size < 1:
@@ -149,6 +190,12 @@ def best_of_n_loop():
             )
     update_lock = threading.Lock()
 
+    if startup_policy_path is not None:
+        with update_lock:
+            _apply_policy_checkpoint(sglang, startup_policy_path)
+        weights_state["primed"] = True
+        print(f"Applied startup policy checkpoint: {startup_policy_path}")
+
     def get_version():
         return weights_state["last_version"]
 
@@ -186,54 +233,65 @@ def best_of_n_loop():
     ).start()
 
     samples_processed = 0
-    for sample_index, sample in enumerate(dataset):
-        with update_lock:
-            num_prompt_tokens, tokenized_best_of_n_output, best_of_n_score = best_of_n(
-                sglang, tokenizer, sample, config, N
-            )
-        global_sample_index = shard_start + sample_index
-        prompt_id = sample.get("prompt_id", sample.get("id", global_sample_index))
-
-        replay_buffer_entry = {
-            "prompt_id": int(prompt_id),
-            "state": tokenized_best_of_n_output,
-            "reward": best_of_n_score,
-            "num_prompt_tokens": num_prompt_tokens,
-        }
-        r.xadd("replay_buffer", {"data": json.dumps(replay_buffer_entry)})
-        samples_processed += 1
-
-        if (
-            rank == eval_owner_rank
-            and eval_dataset is not None
-            and eval_every_num_samples > 0
-            and samples_processed % eval_every_num_samples == 0
-        ):
+    shard_len = len(dataset)
+    for outer_epoch in range(outer_epochs):
+        print(f"Rank {rank}: starting outer epoch {outer_epoch + 1}/{outer_epochs}")
+        epoch_offset = outer_epoch * shard_len
+        for sample_index, sample in enumerate(dataset):
             with update_lock:
-                eval_score = eval_countdown(
-                    None,
-                    eval_dataset,
-                    eval_grader,
-                    config,
-                    llm=sglang,
-                    tokenizer=tokenizer,
+                (
+                    num_prompt_tokens,
+                    tokenized_best_of_n_output,
+                    best_of_n_score,
+                ) = best_of_n(sglang, tokenizer, sample, config, N)
+            global_sample_index = shard_start + epoch_offset + sample_index
+            prompt_id = sample.get("prompt_id", sample.get("id", global_sample_index))
+
+            replay_buffer_entry = {
+                "prompt_id": int(prompt_id),
+                "state": tokenized_best_of_n_output,
+                "reward": best_of_n_score,
+                "num_prompt_tokens": num_prompt_tokens,
+            }
+            r.xadd("replay_buffer", {"data": json.dumps(replay_buffer_entry)})
+            samples_processed += 1
+
+            if (
+                rank == eval_owner_rank
+                and eval_dataset is not None
+                and eval_every_num_samples > 0
+                and samples_processed % eval_every_num_samples == 0
+            ):
+                with update_lock:
+                    eval_score = eval_countdown(
+                        None,
+                        eval_dataset,
+                        eval_grader,
+                        config,
+                        llm=sglang,
+                        tokenizer=tokenizer,
+                    )
+                if wandb_eval_enabled:
+                    wandb.log(
+                        {
+                            "eval/score": eval_score,
+                            "weights/version": weights_state["last_version"],
+                            "eval/samples_processed": samples_processed,
+                        }
+                    )
+                print(
+                    f"Rank {rank}: eval/score={eval_score:.4f} "
+                    f"samples_processed={samples_processed} "
+                    f"weights/version={weights_state['last_version']}"
                 )
-            if wandb_eval_enabled:
-                wandb.log(
-                    {
-                        "eval/score": eval_score,
-                        "weights/version": weights_state["last_version"],
-                        "eval/samples_processed": samples_processed,
-                    }
-                )
-            print(
-                f"Rank {rank}: eval/score={eval_score:.4f} "
-                f"samples_processed={samples_processed} "
-                f"weights/version={weights_state['last_version']}"
-            )
 
     r.close()
 
 
 if __name__ == "__main__":
-    best_of_n_loop()
+    args = parse_args()
+    best_of_n_loop(
+        outer_epochs=args.outer_epochs,
+        startup_policy_path=args.path,
+        config_path=args.config,
+    )
