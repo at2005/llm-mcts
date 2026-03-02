@@ -286,6 +286,7 @@ def best_of_n_loop(outer_epochs=None, startup_policy_path=None, config_path="con
                 )
 
     r.close()
+    wandb.finish()
 
 
 if __name__ == "__main__":
